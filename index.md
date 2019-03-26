@@ -1,37 +1,49 @@
-## Welcome to GitHub Pages
+这里放置 收集/整理/翻译 的Filament 资料/文档/教程.
 
-You can use the [editor on GitHub](https://github.com/Jerkwin/filamentcn/edit/master/index.md) to maintain and preview the content for your website in Markdown files.
+# 缘起
 
-Whenever you commit to this repository, GitHub Pages will run [Jekyll](https://jekyllrb.com/) to rebuild the pages in your site, from the content in your Markdown files.
+一直以来, 我都对计算机图形学很感兴趣, 但无奈与平时工作相距甚远, 外兼视力不佳, 所以只能关注一下, 没有深入研究.
 
-### Markdown
+前几年研究PBR的时候偶然发现了[Romain Guy的PRB渲染demo](http://www.curious-creature.com/2017/08/14/physically-based-rendering-demo/), 当时就有些惊异于其效果, 遂将其下载仔细研究, 以期能改进一下做成一个自用的WegGL库. 就这样, 断断续续地, 开始了我的WenGL学习之旅. 从最开始的不明所以, 逐渐知晓了着色器, 材质, 颜色, 光照, 进而是天空盒, IBL, 色调映射, 等等, 等等. 越学越觉得渲染领域涉及面太广, 个人很难完全精通掌握, 只能将自己限定在一个小的范围内, 对其他范围做些单纯的了解.
 
-Markdown is a lightweight and easy-to-use syntax for styling your writing. It includes conventions for
+当我终于将Guy的demo改造好, 准备发布的时候, 上网一查, 才赫然发现谷歌以已经开源了[Filament](https://github.com/google/filament), 其最初来源就是Guy的demo. 这样我的改造就意义不大了, 所以只能换成先学习这个引擎了.
 
-```markdown
-Syntax highlighted code block
+这里放置 收集/整理/翻译 的Filament 资料/文档/教程, 作为学习的参考和记录.
 
-# Header 1
-## Header 2
-### Header 3
+我毕竟只是业余学习过计算机图形学, 很多名词的翻译不一定符合业内习惯. 如果你发现有不符合习惯的地方, 请指出修正. 如果你发现有错误和不合理的地方, 更要指出. 谢谢.
 
-- Bulleted
-- List
+# Filament概述
 
-1. Numbered
-2. List
+[Filament](https://github.com/google/filament)是一个用C++编写的基于物理的实时渲染器. 它优先考虑移动平台, 但也可用于多个平台.
 
-**Bold** and _Italic_ and `Code` text
+<iframe src="https://google.github.io/filament/webgl/demo_suzanne.html"></iframe>
 
-[Link](url) and ![Image](src)
-```
+我们尽量保持Filament体积小, 加载快, 并专注渲染的特性. 例如, Filament不会在运行时编译材质. 相反, 我们提供了一个命令行工具[`matc`](https://github.com/google/filament/tree/master/tools/matc), 用于离线编译材质.
 
-For more details see [GitHub Flavored Markdown](https://guides.github.com/features/mastering-markdown/).
+更多信息, 请参阅[核心文档]()和[JavaScript文档](). 下载和构建说明请查看项目的[README]().
 
-### Jekyll Themes
+# Filament核心文档
 
-Your Pages site will use the layout and styles from the Jekyll theme you have selected in your [repository settings](https://github.com/Jerkwin/filamentcn/settings). The name of this theme is saved in the Jekyll `_config.yml` configuration file.
+[下载构建]()
+[项目设计]()
+[材质概览]()
+[材质参考页]()
 
-### Support or Contact
+# Filament开发文档/示例
 
-Having trouble with Pages? Check out our [documentation](https://help.github.com/categories/github-pages-basics/) or [contact support](https://github.com/contact) and we’ll help you sort it out.
+## 教程
+
+### 三角形
+### 红色球
+### Blender猴头
+
+## 示例
+
+### 贴图材质球
+### Blender猴头
+### 基本纽结
+
+## 其他文档
+
+### [JavaScript API参考]()
+### [WebGL Meetup讲演 (2018)]()

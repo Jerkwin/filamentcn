@@ -25,8 +25,8 @@
 # Filament核心文档
 
 - [下载构建]()
-- [材质设计](https://jerkwin.github.io/filamentcn/Filament.md.html) [英文版](https://google.github.io/filament/Filament.md.html)
-- [材质概览](https://jerkwin.github.io/filamentcn//Materials.md.html) [英文版](https://google.github.io/filament/Materials.md.html)
+- [材质设计](Filament.md.html) [英文版](https://google.github.io/filament/Filament.md.html)
+- [材质概览](filamentcn//Materials.md.html) [英文版](https://google.github.io/filament/Materials.md.html)
 - [材质参考页](Material_Properties.pdf)
 
 # Filament开发文档/示例

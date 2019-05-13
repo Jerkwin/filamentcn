@@ -20,14 +20,14 @@
 
 我们尽量保持Filament体积小, 加载快, 并专注渲染的特性. 例如, Filament不会在运行时编译材质. 相反, 我们提供了一个命令行工具[`matc`](https://github.com/google/filament/tree/master/tools/matc), 用于离线编译材质.
 
-更多信息, 请参阅[核心文档]()和[JavaScript文档](). 下载和构建说明请查看项目的[README]().
+更多信息, 请参阅下面的核心文档, JavaScript文档, 下载和构建说明.
 
 # Filament核心文档
 
 - [下载构建]()
-- [材质设计](Filament.md.html) [英文版](https://google.github.io/filament/Materials.html)
-- [材质概览](Materials.md.html) [英文版](https://google.github.io/filament/Materials.html)
-- [材质参考页](Material Properties.pdf)
+- [材质设计](Filament.md.html) [英文版](https://google.github.io/filament/Filament.md.html)
+- [材质概览](Materials.md.html) [英文版](https://google.github.io/filament/Materials.md.html)
+- [材质参考页](Material_Properties.pdf)
 
 # Filament开发文档/示例
 

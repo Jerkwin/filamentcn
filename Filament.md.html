@@ -1,0 +1,4281 @@
+               <meta charset="utf-8">
+
+<style>img { max-width: 100%; }</style>
+
+![](images/filament_logo.png)
+
+# 关于
+
+本文档是[Filament项目](https://github.com/google/filament)的一部分. 要报告本文档中的错误, 请使用[项目问题跟踪器](https://github.com/google/filament/issues). 
+
+## 作者
+
+- [Romain Guy](https://github.com/romainguy), [@romainguy](https://twitter.com/romainguy)
+- [Mathias Agopian](https://github.com/pixelflinger), [@darthmoosious](https://twitter.com/darthmoosious)
+
+# 概述
+
+Filament是一个基于物理的渲染(PBR)引擎, 用于Android. 它的目标是为Android开发人员提供一套工具和API, 使他们能够轻松地创建高质量的2D和3D渲染. 
+
+本文档的目的是对Filament所用材质和光照模型背后的方程和理论进行解释. 本文档旨在为Filament的贡献者或对其引擎内部工作感兴趣的开发人员提供参考. 我们将根据需要提供代码片段, 以使理论与实践之间的关系尽可能清晰. 
+
+本文档并不打算作为设计文档. 它只关注算法, 其内容适用于在任何引擎中实现PBR. 然而, 本文档解释了为什么我们选择了特定的算法/模型而不是其他的算法/模型. 
+
+除非另有说明, 本文档中的所有三维渲染都是在引擎(原型或产品)中生成的. 其中的许多3D渲染都来自Filament的早期开发阶段, 并不能反映最终的质量. 
+
+## 原理
+
+实时渲染是一个活跃的研究领域, 对于需要实现的每个特性, 都有大量的公式, 算法和实现可供选择(例如, 在 *Rendering real-time shadows* 这本书中有一个400页的总结, 其中包含了数十种阴影渲染技术). 因此, 在做出明智的决定之前, 我们必须首先明确自己的目标(或原则, 遵循Brent Burley(布伦特·伯利)的开创性论文"迪斯尼基于物理的着色"(Physically-based shading at Disney)[#Burley12]). 
+
+实时移动性能: 我们的主要目标是设计和实现一个能够在移动平台上高效执行的渲染系统. 主要目标是OpenGL ES 3.x类GPU. 
+
+质量: 我们的渲染系统将强调整体画质. 但是我们也接受适度的质量折衷方案, 以支持低中性能的GPU. 
+
+易用性: 美工人员经常需要能够快速地对他们的资源进行迭代, 因此我们的渲染系统必须能够直观地进行迭代. 因此, 我们必须提供易于理解的参数(例如, 不使用镜面反射强度或高光强度, 不使用折射率......). 
+
+    我们也知道, 并非所有的开发人员都有机会与美工合作. 我们系统使用的基于物理的方法可以让开发人员设计出视觉上合理可信的材质, 而无需理解具体实现背后的理论. 
+
+    对于美工和开发人员, 我们的系统所用的参数会尽可能得少, 以减少试错过程, 并能够让用户快速掌握材质模型. 
+
+    此外, 参数值的任意组合都应该能够给出物理上合理的结果. 物理上不合理的材质必须难以创建. 
+
+熟悉度: 我们的系统应该尽可能地使用物理单位: 以米或厘米作为距离单位, 以开尔文作为色温单位, 以流明或坎德拉作为灯光位, 等等. 
+
+灵活性: 基于物理的方法决不能排除非真实感渲染. 例如, 用户界面会需要未进行光照的材料. 
+
+部署大小: 虽然与本文档的内容没有直接关系, 但需要强调的是, 我们希望渲染库尽可能小, 这样任何应用程序都可以使用它, 而不致于将二进制文件增加到不想要的大小. 
+
+## 基于物理的渲染
+
+我们之所以选择PBR, 是因为它具有艺术性和生产效率高的优点, 也因为它符合我们的目标. 
+
+基于物理的渲染是一种渲染方法, 与传统的实时模型相比, 它可以更准确地表现材质及其与光的相互作用. PBR方法的核心是将材质和光照分离, 这样可以更轻松地创建在所有光照条件下看起来都很精确的真实资源. 
+
+# 符号注记
+
+$$
+\newcommand{NoL}{n \cdot l}
+\newcommand{NoV}{n \cdot v}
+\newcommand{NoH}{n \cdot h}
+\newcommand{VoH}{v \cdot h}
+\newcommand{LoH}{l \cdot h}
+\newcommand{fNormal}{f_{0}}
+\newcommand{fDiffuse}{f_d}
+\newcommand{fSpecular}{f_r}
+\newcommand{fX}{f_x}
+\newcommand{aa}{\alpha^2}
+\newcommand{fGrazing}{f_{90}}
+\newcommand{schlick}{F_{Schlick}}
+\newcommand{nior}{n_{ior}}
+\newcommand{Ed}{E_d}
+\newcommand{Lt}{L_{\bot}}
+\newcommand{Lout}{L_{out}}
+\newcommand{cosTheta}{\left< \cos \theta \right> }
+$$
+
+本文档中的公式所用的符号及其定义见表[符号]
+
+
+          符号             |           定义
+:---------------------------:|:---------------------------|
+$v$                          | 视线单位向量
+$l$                          | 入射光线单位向量
+$n$                          | 表面法线单位向量
+$h$                          | 与 $l$ 和 $v$ 对应的半单位向量
+$f$                          | BRDF
+$\fDiffuse$                  | BRDF的漫反射分量
+$\fSpecular$                 | BRDF的镜面反射分量
+$\alpha$                     | 感知线性粗糙度
+$\sigma$                     | 漫反射率
+$\Omega$                     | 球形区域
+$\fNormal$                   | 法向入射反射率
+$\fGrazing$                  | 掠射角反射率
+$\chi^+(a)$                  | Heaviside函数 ($a > 0$为1, 否则为0)
+$n_{ior}$                    | 界面折射率(IOR)
+$\left< \NoL \right>$        | 点积, 区间限定为[0..1]
+$\left< a \right>$           | 饱和值, (区间限定为[0..1])
+[表 [符号]: 符号与定义]
+
+# 材质系统
+
+以下各节介绍了多种材质模型, 用以简化对各种表面特征的描述, 如各向异性或透明涂层. 然而, 在实践中, 其中的一些模型可以压缩为单个模型. 例如, 可以将标准模型, 透明涂层模型和各向异性模型结合起来, 形成一个更灵活更强大的模型. 请参阅[材质文档](./Materials.md.html)中关于Filament实现的材质模型的说明. 
+
+## 标准模型
+
+我们模型的目标是表现标准材质的外观. 数学上, 材质模型由BSDF(双向散射分布函数, Bidirectional Scattering Distribution Function)描述, 而BSDF本身又由两个函数组成: BRDF(双向反射分布函数, Bidirectional Reflectance Distribution Function)和BTDF(双向透射函数, Bidirectional Transmittance Function). 
+
+由于我们的目标是对常见表面进行建模, 因此我们的标准材质模型将侧重于BRDF, 并且忽略BTDF, 或对其使用很粗糙的近似. 因此, 我们的标准模型只能正确地模拟具有短的平均自由程的反射, 各向同性, 电介质或导体表面. 
+
+BRDF描述中, 标准材质的表面响应由两项组成:
+- 漫反射分量或$f_d$
+- 镜面反射分量或$f_r$
+
+表面, 表面法线, 入射光线和这些项之间的关系如图[frFd]所示(我们暂时忽略次表面散射): 
+
+![图[frFd]: 光与表面的相互作用, 使用具有漫反射项 $f_d$ 和镜面反射项 $f_r$ 的BRDF模型](images/diagram_fr_fd.png)
+
+完整的表面响应可以表示为: 
+
+$$\begin{equation}\label{brdf}
+f(v,l)=f_d(v,l)+f_r(v,l)
+\end{equation}$$
+
+此方程描述了单方向入射光的表面响应. 完整的渲染方程需要在整个半球上对$l$进行积分. 
+
+常见表面通常并不是由平整的界面构成的, 因此我们需要一个能够描述光与不规则界面相互作用的模型. 
+
+对此, 微面片BRDF是一种很好的BRDF, 物理上也合理可行. 这种BRDF指出, 表面在微观层面上并不光滑, 而是由大量随机排列的平面碎片组成, 这些平面碎片称为微面片. 图[microfacetVsFlat]展示了平面界面和不规则界面在微观层面上的区别: 
+
+![图[microfacetVsFlat]: 由微面片模型(左)和平面界面模型(右)构建的不规则界面](images/diagram_microfacet.png)
+
+只有当微面片的法线方向位于光线方向和视线方向中间时, 它反射的光才能被看见, 如图[microfacets]所示. 
+
+![图[microfacets]: 微面片](images/diagram_macrosurface.png)
+
+然而, 并不是所有法向取向正确的微面片都会产生反射光, 因为BRDF会考虑遮蔽和阴影. 如图[microfacetShadowing]所示. 
+
+![图[microfacetShadowing]: 微面片的遮蔽和阴影](images/diagram_shadowing_masking.png)
+
+_粗糙度_ 参数对微面片BRDF的影响很大, 该参数描述了一个表面在微观层面上的光滑程度(低粗糙度)或粗糙程度(高粗糙度). 表面越光滑滑, 排列整齐的面片越多, 反射光越明显. 表面越粗糙, 朝向相机的面片越少, 入射光反射后就会从相机中散射出去, 从而使镜面高光变得模糊. 
+
+图[roughness]展示了不同粗糙度的表面以及光线与它们的相互作用. 
+
+![图[roughness]: 不同粗糙度(从左到右, 从粗糙到光滑)以及对应的BRDF镜面反射分量波瓣](images/diagram_roughness.png)
+
+微面片模型由以下方程描述(其中x表示镜面反射分量或漫反射分量): 
+
+$$\begin{equation}
+\fX(v,l) = \frac{1}{| \NoV | | \NoL |}
+\int_\Omega D(m,\alpha) G(v,l,m) f_m(v,l,m) (v \cdot m) (l \cdot m) dm
+\end{equation}$$
+
+其中的$D$项模拟微面片的分布(此项也称为NDF或法向分布函数(Normal Distribution Function)). 如图[roughness]所示, 这一项对表面的外观起着基本的作用. 
+
+$G$ 项模拟微面片的可见度(或遮蔽或阴影遮挡). 
+
+由于此方程对镜面反射分量和漫反射分量都有效, 因此不同之处在于微面片BRDF的$f_m$. 
+
+值得注意的是, 此方程用于在 _微观层面_ 上对半球进行积分: 
+
+![图[microLevel]: 对单个点的表面响应进行建模需要在微观层面上进行积分](images/diagram_micro_vs_macro.png)
+
+上图显示, 在宏观层面上, 表面被视为是平坦的. 如果假定从单个方向照亮的着色片段对应于表面上的单个点, 就有助于简化我们的方程. 
+
+然而, 在微观层面, 表面并不是平坦的, 我们不能再假定单一方向的光线(但我们可以假定入射光线是平行的). 在给定一束平行入射光线的情况下, 由于微面片会向不同的方向散射光, 因此我们必须将半球上的表面响应进行积分, 如上图中的m所示. 
+
+显然, 对每个着色片段, 计算微面片在半球上的完整积分是不实际的. 因此, 我们需要对镜面反射分量和漫反射分量的积分进行近似. 
+
+## 电介质和导体
+
+为了更好地理解下面所示的一些方程及行为, 我们首先必须清楚地理解金属(导体)表面和非金属(电介质)表面之间的区别. 
+
+我们之前看到, 当入射光照射到BRDF控制的表面时, 反射光被分为两个独立的分量: 漫反射和镜面反射. 对这种行为进行建模很简单, 如图[bsdfBrdf]所示. 
+
+![图[bsdfBrdf]: BSDF的BRDF部分的模型化](images/diagram_fr_fd.png)
+
+这种模型简化了光线与表面的实际相互作用方式. 实际上, 入射光的一部分会穿透表面, 在内部散射, 并最终作为漫反射再次离开表面. 这种现象如图[diffuseScattering]所示. 
+
+![图[diffuseScattering]: 漫反射光的散射](images/diagram_scattering.png)
+
+这就是导体和电介质之间的区别所在. 纯金属材料不会发生次表面散射, 这意味着没有漫反射分量(稍后我们会看到, 这会对镜面反射分量的感知颜色产生影响). 散射发生在电介质中, 这意味着它们既有镜面反射分量, 也有漫反射分量. 
+
+因此, 为了正确地模拟BRDF, 我们必须区分电介质和导体(为清楚起见未显示散射), 如图[dielectricConductor]所示. 
+
+![图[dielectricConductor]: 电介质和导体表面的BRDF模型化](images/diagram_brdf_dielectric_conductor.png)
+
+## 能量守恒
+
+在基于物理的渲染中, 能量守恒是一个好的BRDF的关键因素之一. 能量守恒的BRDF表明, 镜面反射和漫反射能量的总和小于入射能量的总和. 如果使用的BRDF无法保证能量守恒, 美工必须手动确保表面反射的光始终弱于入射光. 
+
+## 镜面BRDF
+
+镜面反射项 $f_m$ 是一个镜面BRDF, 可以使用Fresnel(菲涅耳)定律描述, 在微面片模型积分的Cook-Torrance(库克-托兰斯)近似中以$F$表示: 
+
+$$\begin{equation}
+f_r(v,l) = \frac{D(h, \alpha) G(v, l, \alpha) F(v, h, f0)}{4(\NoV)(\NoL)}
+\end{equation}$$
+
+考虑到实时渲染的限制, 我们必须对 $D$, $G$ 和 $F$ 这三项进行近似. [#Karis13]整理了与这三项有关的一系列公式, 它们可以与库克-托兰斯(Cook-Torrance)镜面BRDF一起使用. 以下章节给出我们为这些项选择的方程. 
+
+### 法向分布函数(镜面D)
+
+[#Burley12]观察到, 长尾法向分布函数(NDF)非常适合现实世界的表面. [#Walter07]给出的GGX分布是一种在高光中具有长尾衰减和短峰的分布, 公式简单, 适合实时实现. 在现代基于物理的渲染器中, 它也是一种流行的模型, 等价于Trowbridge-Reitz分布. 
+
+$$\begin{equation}
+D_{GGX}(h,\alpha) = \frac{\aa}{\pi [ (\NoH)^2 (\aa - 1) + 1]^2}
+\end{equation}$$
+
+NDF的GLSL实现简单高效, 如清单[specularD]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float D_GGX(float NoH, float linearRoughness) {
+    float a = NoH * linearRoughness;
+    float k = linearRoughness / (1.0 - NoH * NoH + a * a);
+    return k * k * (1.0 / PI);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [specularD]: 高光D项在GLSL中的实现]
+
+我们可以使用半精度浮点数来改进上面的实现. 这种优化需要修改原始方程, 因为使用半精度浮点数计算$1 - (\NoH)^2$时存在两个问题. 首先, 当 $(\NoH)^2$ 接近1(高光)时, 计算结果会受到浮点抵消的影响. 其次, $\NoH$ 在1附近的精度不够. 
+
+解决方法涉及拉格朗日恒等式(Lagrange's identity): 
+
+$$\begin{equation}
+| a \times b |^2 = |a|^2 |b|^2 - (a \cdot b)^2
+\end{equation}$$
+
+由于 $n$ 和 $h$ 都是单位向量, $|n \times h|^2 = 1 - (\NoH)^2$. 这样我们就可以使用一个简单的叉积, 利用半精度浮点数直接计算$1 - (\NoH)^2$. 清单[specularDfp16]展示了优化后的最终实现. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#define MEDIUMP_FLT_MAX    65504.0
+#define saturateMediump(x) min(x, MEDIUMP_FLT_MAX)
+
+float D_GGX(float linearRoughness, float NoH, const vec3 n, const vec3 h) {
+    vec3 NxH = cross(n, h);
+    float a = NoH * linearRoughness;
+    float k = linearRoughness / (dot(NxH, NxH) + a * a);
+    float d = k * k * (1.0 / PI);
+    return saturateMediump(d);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [specularDfp16]: 高光D项的GLSL优化实现, 用于fp16]
+
+### 几何阴影(镜面G)
+
+Eric Heitz在[#Heitz14]中表示, Smith几何阴影函数可用于 $G$ 项, 正确且准确. Smith公式如下: 
+
+$$\begin{equation}
+G(v,l,\alpha) = G_1(l,\alpha) G_1(v,\alpha)
+\end{equation}$$
+
+$G_1$ 又可以使用不同的模型, 通常使用GGX公式: 
+
+$$\begin{equation}
+G_1(v,\alpha) = G_{GGX}(v,\alpha) = \frac{2 (\NoV)}{\NoV + \sqrt{\aa + (1 - \aa) (\NoV)^2}}
+\end{equation}$$
+
+因此, 完整的Smith-GGX公式如下: 
+
+$$\begin{equation}
+G(v,l,\alpha) = \frac{2 (\NoL)}{\NoL + \sqrt{\aa + (1 - \aa) (\NoL)^2}} \frac{2 (\NoV)}{\NoV + \sqrt{\aa + (1 - \aa) (\NoV)^2}}
+\end{equation}$$
+
+可以发现, 分子 $2(\NoL)$ 和 $2(n \cdot v)$ 使得我们可以引入可见度函数$V$对原来的$f_r$函数进行简化: 
+
+$$\begin{equation}
+f_r(v,l) = D(h, \alpha) V(v, l, \alpha) F(v, h, f_0)
+\end{equation}$$
+
+其中
+
+$$\begin{equation}
+V(v,l,\alpha) = \frac{G(v, l, \alpha)}{4 (\NoV) (\NoL)} = V_1(l,\alpha) V_1(v,\alpha)
+\end{equation}$$
+
+以及:
+
+$$\begin{equation}
+V_1(v,\alpha) = \frac{1}{\NoV + \sqrt{\aa + (1 - \aa) (\NoV)^2}}
+\end{equation}$$
+
+然而, Heitz指出, 如果考虑微面片的高度对遮蔽和阴影的影响, 可以得到更精确的结果. 因此他定义了高度相关的Smith函数: 
+
+$$\begin{equation}
+G(v,l,h,\alpha) = \frac{\chi^+(\VoH) \chi^+(\LoH)}{1 + \Lambda(v) + \Lambda(l)}
+\end{equation}$$
+
+$$\begin{equation}
+\Lambda(m) = \frac{-1 + \sqrt{1 + \aa \tan^2\theta_m}}{2} = \frac{-1 + \sqrt{1 + \aa \frac{1 - \cos^2\theta_m}{\cos^2\theta_m}}}{2}
+\end{equation}$$
+
+将 $\theta_m$ 替换为 $\NoV$, 我们得到: 
+
+$$\begin{equation}
+\Lambda(v) = \frac{1}{2} \left( \frac{\sqrt{\aa + (1 - \aa)(\NoV)^2}}{\NoV} - 1 \right)
+\end{equation}$$
+
+从中我们可以推导出可见度函数: 
+
+$$\begin{equation}
+V(v,l,\alpha) = \frac{0.5}{\NoL \sqrt{(\NoV)^2 (1 - \aa) + \aa} + \NoV \sqrt{(\NoL)^2 (1 - \aa) + \aa}}
+\end{equation}$$
+
+可见度项的GLSL实现见清单[specularV], 它比我们预期的更耗时, 因为需要进行两次`sqrt`运算. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float V_SmithGGXCorrelated(float NoV, float NoL, float linearRoughness) {
+    float a2 = linearRoughness * linearRoughness;
+    float GGXV = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
+    float GGXL = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
+    return 0.5 / (GGXV + GGXL);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [specularV]: 高光V项的GLSL实现]
+
+注意到根号下的所有项都是平方形式, 并且都处于$[0..1]$范围内, 因此我们可以使用近似来优化上面的可见度函数: 
+
+$$\begin{equation}
+V(v,l,\alpha) = \frac{0.5}{\NoL [\NoV (1 - \alpha) + \alpha] + \NoV [\NoL (1 - \alpha) + \alpha]}
+\end{equation}$$
+
+这种近似在数学上是错误的, 但可以避免两次平方根运算, 而且对于实时移动应用程序来说足够精确, 如清单[approximatedSpecularV]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float V_SmithGGXCorrelatedFast(float NoV, float NoL, float linearRoughness) {
+    float a = linearRoughness;
+    float GGXV = NoL * (NoV * (1.0 - a) + a);
+    float GGXL = NoV * (NoL * (1.0 - a) + a);
+    return 0.5 / (GGXV + GGXL);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [approximatedSpecularV]: 高光V项的GLSL实现]
+
+[#Hammon17]同样发现可以去掉平方根, 并基于此提出了相同的近似. 他的方法将表达式重写为 _lerps_: 
+
+$$\begin{equation}
+V(v,l,\alpha) = \frac{0.5}{lerp(2 (\NoL) (\NoV), \NoL + \NoV, \alpha)}
+\end{equation}$$
+
+### Fresnel(镜面F)
+
+Fresnel效应对基于物理的材质的外观有着重要影响. 这种效应模拟了这样一个事实, 观察者看到的由表面反射的光的多少取决于观察角度(视角). 大的水体是体验这种现象的完美方式, 如图[fresnelLake]所示. 当向下直视水面(沿法线方向)时, 你可以看透水. 然而, 当在远处观察时(在掠射角处, 感知到的光线越来越与表面平行), 你会看到水面的镜面反射变得更加强烈. 
+
+反射的光量不仅取决于视角, 还取决于材料的折射率(IOR, index of refraction). 沿法向入射(垂直入射, 入射光线垂直于表面或入射角为0度)时, 可以根据IOR计算出反射回来的光量 $\fNormal$, 我们将在节[反射率重映射]讨论. 对于光滑的材料, 以掠射角反射回来的光量 $\fGrazing$ 接近100％. 
+
+![图[fresnelLake]: Fresnel效应对大的水体特别明显](images/photo_fresnel_lake.jpg)
+
+更正式地说, Fresnel项定义了光在两种不同介质的界面处如何反射和折射, 或反射和透射能量的比例. [#Schlick94]给出了Cook-Torrance镜面BRDF的Fresnel项的快速近似计算公式: 
+
+$$\begin{equation}
+F_{Schlick}(v,h,\fNormal,\fGrazing) = \fNormal + (\fGrazing - \fNormal)(1 - \VoH)^5
+\end{equation}$$
+
+常数 $\fNormal$ 表示垂直入射时的镜面反射率, 电介质对应的值是单色的, 金属对应的值是多色的. 实际值取决于界面的折射率. 这一项的GLSL实现需要使用`pow`, 如清单[specularF]所示, 也可以用几次乘法代替. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 F_Schlick(float VoH, vec3 f0, float f90) {
+    return f0 + (vec3(f90) - f0) * pow(1.0 - VoH, 5.0);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [specularF]: 高光F项的GLSL实现]
+
+这个Fresnel函数可以看作在垂直入射镜面反射率 $\fNormal$ 和掠射角反射率 $\fGrazing$ 之间进行插值. 对真实世界材料的观察表明, 电介质和导体在掠射角处都表现出单色镜面反射, 并且90度时的Fresnel反射率为1.0. 更正确的 $\fGrazing$ 将在节[镜面遮蔽]中讨论. 
+
+将 $\fGrazing$ 设置为1, 稍微重构下代码, 可以使用标量运算对Fresnel项的Schlick近似进行优化. 结果如清单[scalarSpecularF]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 F_Schlick(float VoH, vec3 f0) {
+    float f = pow(1.0 - VoH, 5.0);
+    return f + f0 * (1.0 - f);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [scalarSpecularF]: 高光F项GLSL实现的标量优化]
+
+## 漫反射BRDF
+
+在漫反射项中, $f_m$为Lambertian函数, BRDF的漫反射项变为: 
+
+$$\begin{equation}
+\fDiffuse(v,l) = \frac{\sigma}{\pi} \frac{1}{| \NoV | | \NoL |}
+\int_\Omega D(m,\alpha) G(v,l,m) (v \cdot m) (l \cdot m) dm
+\end{equation}$$
+
+不过, 我们的实现将使用一个简单的Lambertian BRDF, 它假定微面片半球具有均匀的漫反射: 
+
+$$\begin{equation}
+\fDiffuse(v,l) = \frac{\sigma}{\pi}
+\end{equation}$$
+
+实际上, 漫反射率 $\sigma$ 后面会作为因子, 如清单[diffuseBRDF]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float Fd_Lambert() {
+    return 1.0 / PI;
+}
+
+vec3 Fd = diffuseColor * Fd_Lambert();
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [diffuseBRDF]: 漫反射Lambertian BRDF的GLSL实现]
+
+显然, Lambertian BRDF非常高效, 并且提供的结果与更复杂的模型足够接近. 
+
+但是, 漫反射部分最好与镜面反射项一致, 并考虑表面的粗糙度. 迪斯尼的漫反射BRDF模型[#Burley12]和Oren-Nayar模型[#Oren94]都考虑了粗糙度, 并在掠射角处添加了一些后向反射. 考虑到我们的限制, 我们认为额外的运行时成本只带来质量的略微提高并不值得. 这种复杂的漫反射模型也使得基于图像和球谐函数的渲染更难以表达和实现. 
+
+为完整起见, [#Burley12]给出的迪斯尼漫反射BRDF如下: 
+
+$$\begin{equation}
+\fDiffuse(v,l) = \frac{\sigma}{\pi} \schlick(n,l,1,\fGrazing) \schlick(n,v,1,\fGrazing)
+\end{equation}$$
+
+其中
+
+$$\begin{equation}
+\fGrazing=0.5 + 2 \cdot \alpha \cos^2\theta_d
+\end{equation}$$
+
+需要注意的是, 此公式中使用的粗糙度是感知线性粗糙度(在节[参数化]中将对此进行更多讨论). 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float F_Schlick(float VoH, float f0, float f90) {
+    return f0 + (f90 - f0) * pow(1.0 - VoH, 5.0);
+}
+
+float Fd_Burley(float NoV, float NoL, float LoH, float linearRoughness) {
+    float f90 = 0.5 + 2.0 * linearRoughness * LoH * LoH;
+    float lightScatter = F_Schlick(NoL, 1.0, f90);
+    float viewScatter = F_Schlick(NoV, 1.0, f90);
+    return lightScatter * viewScatter * (1.0 / PI);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [diffuseBRDF]: 迪斯尼漫反射BRDF的GLSL实现]
+
+图[lambert_vs_disney]展示了简单的Lambertian漫反射BRDF和更高质量的迪斯尼漫反射BRDF之间的比较, 比较时使用了完全粗糙的电介质材料. 为便于比较, 对右边的球体进行了镜像. 两种BRDF的表面响应非常相似, 但迪斯尼模型在掠射角处展现出一些漂亮的后向反射(仔细观察球体的左侧边缘). 
+
+![图[lambert_vs_disney]: Lambertian漫反射BRDF(左)和迪斯尼漫反射BRDF(右)之间的比较](images/diagram_lambert_vs_disney.png)
+
+在我们的渲染器中, 美工/开发者可以根据他们所需的质量和目标设备的性能来选择是否使用迪斯尼漫反射BRDF. 然而, 值得注意的是, 迪斯尼漫反射BRDF并不像这里所说的那样能量守恒. 
+
+## 标准模型的总结
+
+**镜面反射项**: 也称高光反射项, 或简称镜面项/高光项, 使用Cook-Torrance镜面微面片模型, 具有GGX法向分布函数, Smith-GGX高度相关的可见度函数, Schlick Fresnel函数. 
+
+**漫反射项**: Lambertian漫反射模型. 
+
+标准模型的完整GLSL实现如清单[glslBRDF]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float D_GGX(float NoH, float a) {
+    float a2 = a * a;
+    float f = (NoH * a2 - NoH) * NoH + 1.0;
+    return a2 / (PI * f * f);
+}
+
+vec3 F_Schlick(float VoH, vec3 f0) {
+    return f0 + (vec3(1.0) - f0) * pow(1.0 - VoH, 5.0);
+}
+
+float V_SmithGGXCorrelated(float NoV, float NoL, float a) {
+    float a2 = a * a;
+    float GGXL = NoV * sqrt((-NoL * a2 + NoL) * NoL + a2);
+    float GGXV = NoL * sqrt((-NoV * a2 + NoV) * NoV + a2);
+    return 0.5 / (GGXV + GGXL);
+}
+
+float Fd_Lambert() {
+    return 1.0 / PI;
+}
+
+void BRDF(...) {
+    vec3 h = normalize(v + l);
+
+    float NoV = abs(dot(n, v)) + 1e-5;
+    float NoL = clamp(dot(n, l), 0.0, 1.0);
+    float NoH = clamp(dot(n, h), 0.0, 1.0);
+    float LoH = clamp(dot(l, h), 0.0, 1.0);
+
+    // 感知线性粗糙度(参见参数化章节说明)
+    float a = roughness * roughness;
+
+    float D = D_GGX(NoH, a);
+    vec3  F = F_Schlick(LoH, f0);
+    float V = V_SmithGGXCorrelated(NoV, NoL, a);
+
+    // 镜面反射BRDF
+    vec3 Fr = (D * V) * F;
+
+    // 漫反射BRDF
+    vec3 Fd = diffuseColor * Fd_Lambert();
+
+    // 添加光照 ...
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [glslBRDF]: BRDF的GLSL实现]
+
+## 改进BRDF
+
+我们在节[能量守恒]中提到, 能量守恒是一个好的BRDF的关键因素之一. 不幸的是, 前面讨论的BRDF存在两个问题, 我们将在下面进行研究. 
+
+### 漫反射的能量增益
+
+Lambert漫反射BRDF不考虑表面反射的光, 因此不存在漫反射散射. 
+
+[TODO: 用fr+fd讨论问题]
+
+### 镜面反射的能量损失
+
+我们之前提到的Cook-Torrance BRDF尝试在微面片层面上模拟一些事件, 但通过计算光的单次反弹来实现。这种近似会导致高粗糙度时出现能量损失. 图[singleVsMultiBounce]展示了发生这种能量损失的原因. 在单次反弹(或单重散射)模型中, 照射到表面的光线可以被反射到另一个微面片上, 并由于遮蔽和阴影项而被忽略. 然而, 如果我们考虑多次反弹(多重散射), 同一光线可能最终会离开微面片区域, 并被反射回观察者. 
+
+![图[singleVsMultiBounce]: 单重散射(左)与多重散射](images/diagram_single_vs_multi_scatter.png)
+
+基于这个简单的解释, 我们可以直观地推断出, 因为没有考虑多重散射事件, 表面越粗糙, 能量损失的可能性就越大. 这种能量损失会使粗糙的材质看起来变暗. 金属表面受到的影响特别大, 因为它们的所有反射都是镜面反射. 这种变暗效果如图[metallicRoughEnergyLoss]所示. 可以实现多重散射的能量守恒, 如图[metallicRoughEnergyLoss]所示. 
+
+![图[metallicRoughEnergyLoss]: 由于单重散射, 变暗程度会随粗糙度增大而增加](images/material_metallic_energy_loss.png)
+
+![图[metallicRoughEnergyConservation]: 多重散射的能量守恒](images/material_metallic_energy_conservation.png)
+
+我们可以使用一个白色的物体, 将其置于纯白色的均匀光照环境中, 来验证BRDF的能量守恒性. 如果达到能量守恒, 纯反射的金属表面($\fNormal = 1$)应该无法与背景区分开来, 无论该表面的粗糙度如何. 图[whiteFurnaceLoss]展示了使用前面章节中介绍的镜面BRDF时, 这种表面的外观. 随粗糙度的增大, 能量损失显而易见. 相比之下, 图[whiteFurnaceConservation]表明, 计算多重散射事件可以解决能量损失问题. 
+
+![图[whiteFurnaceLoss]: 由于单重散射导致变暗程度随粗糙度增大而增加](images/material_furnace_energy_loss.png)
+
+![图[whiteFurnaceConservation]: 多重散射可以保证能量守恒](images/material_furnace_energy_conservation.png)
+
+[#Heitz16]深入讨论了多重散射微面片BRDF. 遗憾的是, 论文只给出了多重散射BRDF的随机估计. 因此, 其解决方法不适用于实时渲染. Kulla和Conty在[#Kulla17]中提出了不同的方法. 他们的想法是添加一个能量补偿项, 作为额外的一个BRDF波瓣, 如方程 $\ref{energyCompensationLobe}$ 所示: 
+
+$$\begin{equation}\label{energyCompensationLobe}
+f_{ms}(l,v) = \frac{(1 - E(l)) (1 - E(v)) F_{avg}^2 E_{avg}}{\pi (1 - E_{avg}) [1 - F_{avg}(1 - E_{avg})]}
+\end{equation}$$
+
+其中 $E$ 为镜面反射BRDF $f_r$ 的方向反照率, $\fNormal$设置为1: 
+
+$$\begin{equation}
+E(l) = \int_{\Omega} f(l,v) (\NoV) dv
+\end{equation}$$
+
+$E_{avg}$ 项为 $E$ 的余弦加权平均值: 
+
+$$\begin{equation}
+E_{avg} = 2 \int_0^1 E(\mu) \mu d\mu
+\end{equation}$$
+
+同样, $F_{avg}$ 为Fresnel项的余弦加权平均值: 
+
+$$\begin{equation}
+F_{avg} = 2 \int_0^1 F(\mu) \mu d\mu
+\end{equation}$$
+
+$E$ 和 $E_{avg}$ 这两项都可以预先计算好并存储在查找表中. 如果使用Schlick近似, $F_{avg}$ 可以大大化简: 
+
+$$\begin{equation}\label{averageFresnel}
+F_{avg} = \frac{1 + 20 \fNormal}{21}
+\end{equation}$$
+
+这个新的波瓣与原来的单重散射波瓣, 也就是前面提到的$f_r$, 结合在一起: 
+
+$$\begin{equation}
+f_{r}(l,v) = f_{ss}(l,v) + f_{ms}(l,v)
+\end{equation}$$
+
+在[#Lagarde18]中, 归功于Emmanuel Turquin, Lagarde和Golubev发现方程 $\ref{averageFresnel}$ 可以简化为 $\fNormal$. 他们还建议通过添加缩放的GGX镜面反射波瓣来进行能量补偿: 
+
+$$\begin{equation}\label{energyCompensation}
+f_{ms}(l,v) = \fNormal \frac{1 - E(l)}{E(l)} f_{ss}(l,v)
+\end{equation}$$
+
+关键的洞察在于, $E(l)$ 不仅可以预先计算, 而且还可以与基于图像的光照预积分结合在一起. 因此, 多重散射能量补偿公式变为: 
+
+$$\begin{equation}\label{scaledEnergyCompensationLobe}
+f_r(l,v) = f_{ss}(l,v) + \fNormal \left( \frac{1}{r} - 1 \right) f_{ss}(l,v)
+\end{equation}$$
+
+其中 $r$ 定义为: 
+
+$$\begin{equation}
+r = \int_{\Omega} D(l,v) V(l,v) \left< \NoL \right> dl
+\end{equation}$$
+
+如果将 $r$ 存储在节[基于图像的光照]中讨论的DFG查找表中, 我们就能以可忽略的成本实现镜面能量补偿. 清单[energyCompensationImpl]展示的实现是方程 $\ref{scaledEnergyCompensationLobe}$ 的直接转换. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 energyCompensation = 1.0 + f0 * (1.0 / dfg.y - 1.0);
+// 缩放镜面波瓣以考虑多重散射
+Fr *= pixel.energyCompensation;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [energyCompensationImpl]: 能量补偿镜面反射波瓣的实现]
+
+请参阅节[基于图像的光照]和节[多重散射的预积分], 了解如何导出和计算DFG查找表. 
+
+## 参数化
+
+[#Burley12]中描述的迪斯尼材质模型是一个很好的起点, 但众多参数使得它不适合实时实现. 此外, 我们希望我们的标准材质模型对于美工和开发人员来说易于理解, 易于使用. 
+
+### 标准参数
+
+表[standardParameters]给出了满足我们的限定条件的参数列表. 
+
+
+       参数      |      定义
+---------------------:|:---------------------
+**BaseColor 基色**         | 非金属表面的漫反射, 金属表面的镜面反射
+**Metallic 金属度**          | 表面属于电介质(0.0)还是导体(1.0). 通常作为二进制值(0或1)
+**Roughness 粗糙度**         | 表面的感知光滑程度(0.0)或粗糙程度(1.0). 光滑的表面会呈现出清晰的反射
+**Reflectance 反射率**       | 垂直入射时电介质表面的Fresnel反射率. 此项代替了明确的折射率
+**Emissive 自发光**          | 额外的漫反射反照率, 用于模拟发光表面(如霓虹灯等). 此参数主要用于具有泛光通道的HDR管线
+**Ambient occlusion 环境光遮蔽** | 定义一个表面点接收环境光的程度. 它是每像素的阴影因子, 介于0.0和1.0之间. 此参数将在光照章节中详细讨论
+[表[standardParameters]: 标准模型的参数]
+
+图[material_parameters]展示了金属, 粗糙度和反射率参数对表面外观的影响. 
+
+![图[material_parameters]: 从上到下: 变化的金属度参数, 变化的电介质粗糙度, 变化的金属粗糙度, 变化的反射率](images/material_parameters.png)
+
+### 类型和范围
+
+了解材质模型的不同参数的类型和范围非常重要, 如表[standardParametersTypes]所示. 
+
+
+       参数      |    类型和范围
+---------------------:|:---------------------
+**BaseColor 基色**         | 线性RGB [0..1]
+**Metallic 金属度**          | 标量 [0..1]
+**Roughness 粗糙度**         | 标量 [0..1]
+**Reflectance 反射率**       | 标量 [0..1]
+**Emissive 自发光**          | 线性RGB [0..1] + 曝光补偿
+**Ambient occlusion 环境光遮蔽** | 标量 [0..1]
+[表 [standardParametersTypes]:标准模型参数的范围和类型]
+
+请注意, 这里给出的类型和范围是着色器可以直接使用的. API和/或UI工具可以并且应该允许使用其他类型和范围来指定参数, 如果它们对美工来说更直观的话. 
+
+例如, 基色可以在sRGB空间中表示, 并在发送到着色器之前转换为线性RGB. 对于美工来说, 将金属度, 粗糙度和反射率参数表示为介于0到255之间(从黑到白)的灰度值也很有用. 
+
+另一个例子: 发光参数可以表示为色温和强度, 以模拟黑体发出的光. 
+
+### 重映射
+
+为使美工人员使用标准材质模型时更容易, 更直观, 我们必须重新映射参数 _基色_, _粗糙度_ 和 _反射率_. 
+
+#### 基色重映射
+
+材质的基色受材质自身的"金属度"影响. 电介质具有单色镜面反射, 但仍保留其基色作为漫反射颜色. 另一方面, 导体使用其基色作为镜面反射颜色, 但没有漫反射分量. 
+
+因此, 光照方程必须使用漫反射颜色和 $\fNormal$ 而不是基色. 很容易从基色计算漫反射颜色, 如清单[baseColorToDiffuse]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 diffuseColor = (1.0 - metallic) * baseColor.rgb;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [baseColorToDiffuse]: 基色与漫反射颜色转换的GLSL实现]
+
+#### 反射率重映射
+
+**电介质**
+
+Fresnel项依赖于 $\fNormal$, 即对应法向入射的镜面反射率, 并且对电介质而言是单色的. 我们将使用[#Lagarde14]给出的电介质表面的重映射: 
+
+$$\begin{equation}
+\fNormal = 0.16 \cdot reflectance^2
+\end{equation}$$
+
+目标是将 $\fNormal$ 映射到一个范围, 该范围可以不是普通电介质表面(4％反射率)和宝石表面(8％至16％)的Fresnel值. 如果输入的反射率为0.5(或线性RGB灰度级别为128), 选择的映射函数可以得到4%的Fresnel反射值. 图[reflectance]展示了这些常见值以及它们与映射函数的关系. 
+
+![图[reflectance]: 常用反射率的值](images/diagram_reflectance.png)
+
+如果已知折射率(例如, 空气-水界面的IOR为1.33), 可以根据下式计算Fresnel反射率: 
+
+$$\begin{equation}\label{fresnelEquation}
+\fNormal(n_{ior}) = \frac{(\nior - 1)^2}{(\nior + 1)^2}
+\end{equation}$$
+
+如果已知反射率, 则可以计算相应的IOR: 
+
+$$\begin{equation}
+n_{ior} = \frac{2}{1 - \sqrt{\fNormal}} - 1 
+\end{equation}$$
+
+表[commonMatReflectance]给出了各类材料可接受的Fresnel反射率(现实世界中没有材料的值低于2％). 
+
+
+          材料         |    反射率   |   线性值
+--------------------------:|:-----------------|:----------------
+水 Water                      | 2%               | 0.35
+纤维 Fabric                     | 4%到5.6%       | 0.5到0.59
+常见液体 Common liquids             | 2%到4%         | 0.35到0.5
+常见宝石 Common gemstones           | 5%到16%        | 0.56到1.0
+塑料, 玻璃 Plastics, glass            | 4%到5%         | 0.5到0.56
+其他电介质材料 Other dielectric materials | 2%到5%         | 0.35到0.56
+眼睛 Eyes                       | 2.5%             | 0.39
+皮肤 Skin                       | 2.8%             | 0.42
+毛发 Hair                       | 4.6%             | 0.54
+牙齿 Teeth                      | 5.8%             | 0.6
+默认值                           | 4%               | 0.5
+[表 [commonMatReflectance]: 常见材料的反射率 (来源: Real-Time Rendering 第4版)]
+
+表[fNormalMetals]列出了少数金属的 $\fNormal$ 值. 这些值以sRGB格式给出, 必须作为材质模型中的基色. 有关如何根据测量数据计算这些sRGB颜色的说明, 请参见附录节[镜面颜色]. 
+
+
+    金属  | $\fNormal$ 的sRGB值  |  十六进制颜色值 |               颜色
+----------:|:-------------------:|:------------:|-------------------------------------------------------
+银 Silver     | 0.97, 0.96, 0.91    | #f7f4e8     | <div style="background-color: #f7f4e8; width: 60px">&nbsp;</div>
+铝 Aluminum   | 0.91, 0.92, 0.92    | #e8eaea     | <div style="background-color: #e8eaea; width: 60px">&nbsp;</div>
+钛 Titanium   | 0.76, 0.73, 0.69    | #c1baaf     | <div style="background-color: #c1baaf; width: 60px">&nbsp;</div>
+铁 Iron       | 0.77, 0.78, 0.78    | #c4c6c6     | <div style="background-color: #c4c6c6; width: 60px">&nbsp;</div>
+铂 Platinum   | 0.83, 0.81, 0.78    | #d3cec6     | <div style="background-color: #d3cec6; width: 60px">&nbsp;</div>
+金 Gold       | 1.00, 0.85, 0.57    | #ffd891     | <div style="background-color: #ffd891; width: 60px">&nbsp;</div>
+黄铜 Brass      | 0.98, 0.90, 0.59    | #f9e596     | <div style="background-color: #f9e596; width: 60px">&nbsp;</div>
+铜 Copper     | 0.97, 0.74, 0.62    | #f7bc9e     | <div style="background-color: #f7bc9e; width: 60px">&nbsp;</div>
+[表 [fNormalMetals]: 常见金属的 $\fNormal$ ]
+
+在掠射角处, 所有材质的Fresnel反射率都是100%, 因此在计算镜面反射BRDF的 $\fSpecular$ 时, 我们按以下方式设置 $\fGrazing$: 
+
+$$\begin{equation}
+\fGrazing = 1.0
+\end{equation}$$
+
+图[grazing_reflectance]展示了一个红色的塑料球. 如果仔细观察球体的边缘, 你能够注意到掠射角处的单色镜面反射. 
+
+![图[grazing_reflectance]: 镜面反射在掠射角时变为单色](images/material_grazing_reflectance.png)
+
+**导体**
+
+金属表面的镜面反射是多色的: 
+
+$$\begin{equation}
+\fNormal = baseColor \cdot metallic
+\end{equation}$$
+
+清单[fNormal]展示了如何计算电介质和金属材质的 $\fNormal$. 结果表明, 镜面反射的颜色来自金属的基色. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 f0 = 0.16 * reflectance * reflectance * (1.0 - metallic) + baseColor * metallic;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [fNormal]: 在GLSL中计算电介质和金属材质的 $\fNormal$]
+
+
+#### 粗糙度重映射和区间限定
+
+使用以下公式将粗糙度重新映射到感知线性范围: 
+
+$$\begin{equation}
+\alpha = roughness^2
+\end{equation}$$
+
+图[roughness_remap]展示了粗糙度增加(从0.0到1.0)的银金属表面, 使用了未修改的粗糙度值(下)和感知线性粗糙度值(上). 
+
+![图[roughness_remap]: 粗糙度重映射的比较: 感知线性粗糙度(上)和粗糙度(下)](images/material_roughness_remap.png)
+
+通过这种视觉比较, 很明显, 重新映射的粗糙度更容易为美工和开发人员所理解. 如果不使用重映射, 光泽金属表面的值必须限制在0.0到0.05之间的非常小的范围内. 
+
+Brent Burley在他的演讲中给出了类似的提议[#Burley12]. 在试验了其他映射(例如三次映射和四次映射)之后, 我们得到的结论是, 这种简单的平方重映射给出的结果视觉上令人满意, 也很直观, 同时对于实时应用来说还很便宜. 
+
+最后但并非最不重要的是, 需要注意, 运行时各种计算中都会使用粗糙度参数, 对这些计算, 有限的浮点精度可能成为问题. 例如, 在移动GPU上 _mediump_ 精度的浮点数通常以半浮点数(fp16)实现. 
+
+在计算我们的光照方程中诸如 $\frac{1}{roughness^4}$ 之类的小值时会产生问题(在GGX计算中感知线性粗糙度会进行平方). 半精度浮点数可以表示的最小值为 $2^{-14}$, 大约是 $6.1 \times 10^{-5}$. 为了避免在不支持去归一化的设备上除以0, $\frac{1}{roughness^4}$ 的结果必须大于 $6.1 \times 10^{-5}$. 为此, 我们必须将粗糙度限定到0.089, 这样得到的值为 $6.274 \times 10^{- 5}$.  
+
+还应该避免去归一化, 以防止性能下降. 粗糙度也不能设置为0, 以避免直接除以0. 
+
+由于我们也希望镜面高光的尺寸尽可能小(粗糙度接近0时会产生几乎不可见的高光), 因此我们应该将着色器的粗糙度限制在安全范围内. 这种限定还具有校正镜面锯齿[^frostbiteRoughnessClamp]的额外优点, 低粗糙度值时可能会出现这样的镜面锯齿. 
+
+[^frostbiteRoughnessClamp]: Frostbite引擎将解析灯光的粗糙度限定为0.045, 以减少镜面锯齿. 使用单精度浮点数(fp32)时可以这样做. 
+
+### 混合和分层
+
+如[#Burley12]和[#Neubelt13]所指出的, 只需要对不同的参数进行简单插值, 这个模型就可以在不同材质之间进行稳健的混合. 特别是, 它允许使用简单的遮蔽对不同的材质进行分层. 
+
+例如, 图[materialBlending]展示了Ready at Dawn工作室在作品 _The Order: 1886_ 中如何使用材质混合和分层从简单的材质库(金, 铜, 木材, 铁锈等)创建出复杂的外观. 
+
+![图[materialBlending]: 材质混合和分层. 来源: Ready at Dawn工作室](images/material_blending.png)
+
+材质的混合和分层实际上是对材质模型各种参数的插值. 图[material_interpolation]显示了光泽的金属铬和粗糙的红色塑料之间的插值. 虽然中间的混合材质几乎没有物理意义, 但它们看起来似乎是合理的. 
+
+![图[material_interpolation]: 从光泽的铬(左)到粗糙的红色塑料(右)之间的插值](images/material_interpolation.png)
+
+### 制作基于物理的材质
+
+一旦理解了四个主要参数, 基色, 金属度, 粗糙度和反射率, 的本质, 设计基于物理的材质就变得相当容易. 
+
+我们提供了一份[图表/参考指南](./Material％20Properties.pdf)来帮助美工和开发人员制作自己的基于物理的材质. 
+
+![制作基于物理的材质](images/material_chart.jpg)
+
+此外, 以下是如何使用我们的材质模型的快速总结: 
+
+所有材质:
+:  **基色** 不应含有光照信息, 但微遮蔽除外. 
+
+    **金属度** 几乎是一个二进制值. 纯导体的金属度为1, 纯电介质的金属度为0. 你应该尝试使用接近0和1的值. 中间的值用于表面类型之间的过渡(例如金属到生锈). 
+
+非金属材质
+: **基色** 代表反射颜色, 应为sRGB值, 范围为50-240(严格范围)或30-240(容差范围). 
+
+    **金属度** 应为0或接近0. 
+
+    **反射率** 如果找不到合适值, 应设置为127 sRGB(0.5线性, 4％反射率). 不要使用低于90 sRGB(0.35线性, 2％反射率)的值. 
+
+金属材质
+: **基色** 代表镜面反射颜色和反射率. 使用光度为67％至100％(170-255 sRGB)的值. 氧化或脏的金属应使用比清洁金属更低的光度以考虑非金属成分. 
+
+    **金属度** 应为1或接近1. 
+
+    **反射率** 忽略(根据基色计算). 
+
+## 透明涂层模型
+
+前面描述的标准材质模型非常适用于由单层构成的各向同性表面. 不幸的是, 多层材质相当常见, 尤其是标准层上有一个薄的半透明层的材质. 现实世界中这类材料的例子包括汽车涂料, 汽水罐, 漆木, 丙烯酸等. 
+
+![图[materialClearCoat]: 蓝色金属表面标准材质模型(左)和透明涂层模型(右)的比较](images/material_clear_coat.png)
+
+通过添加第二个镜面反射波瓣, 可以将透明涂层作为标准材质模型的扩展, 这意味着要计算第二个镜面反射BRDF. 为了简化实施和参数化, 透明涂层将始终是各向同性的电介质. 基本层可以是标准模型中的任何对象(电介质或导体). 
+
+由于入射光会穿过透明涂层, 我们必须考虑能量损失, 如图[clearCoatModel]所示. 然而, 我们的模型不会模拟内部反射和折射行为. 
+
+![图[clearCoatModel]: 透明涂层表面模型](images/diagram_clear_coat.png)
+
+### 透明涂层镜面BRDF
+
+透明涂层同样使用标准模型中的Cook-Torrance微面片BRDF进行建模. 由于透明涂层始终是各向同性的电介质, 粗糙度较低(参见节[透明涂层参数化]), 我们可以选择更便宜的DFG项而不会导致视觉质量明显降低. 
+
+对[#Karis13]和[#Burley12]中列出各项进行的调查表明, 我们已经在标准模型中使用的Fresnel和NDF项在计算上并不比其他项更昂贵. [#Kelemen01]给出了一个更简单的公式, 可以取代我们的Smith-GGX可见度项: 
+
+$$\begin{equation}
+V(l,h) = \frac{1}{4(\LoH)^2}
+\end{equation}$$
+
+这个遮蔽阴影函数不是基于物理的, 如[#Heitz14]指出, 但简单性使它非常适用于实时渲染. 
+
+总之, 我们的透明涂层BRDF是一个Cook-Torrance镜面微面片模型, 具有GGX法向分布函数, Kelemen可见度函数和Schlick Fresnel函数. 清单[kelemen]展示了其GLSL实现有多么简单. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float V_Kelemen(float LoH) {
+    return 0.25 / (LoH * LoH);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [kelemen]: Kelemen可见度项的GLSL实现]
+
+**有关Fresnel项的说明**
+
+镜面BRDF的Fresnel项需要 $\fNormal$, 即对应法向入射角的镜面反射率. 该参数可以根据界面的折射率计算. 我们假定透明涂层由聚氨酯组成, 这是一种常见的化合物, [用于涂料和清漆](https://en.wikipedia.org/wiki/List_of_polyurethane_applications#Varnish)或类似物. 空气-聚氨酯界面的[IOR为1.5](http://www.clearpur.com/transparent-polyurethanes/), 由此我们可以计算出 $\fNormal$: 
+
+$$\begin{equation}
+\fNormal(1.5) = \frac{(1.5 - 1)^2}{(1.5 + 1)^2} = 0.04
+\end{equation}$$
+
+这对应于4％的Fresnel反射率, 我们知道这对应于普通电介质材料. 
+
+### 表面响应中的积分
+
+因为我们必须考虑到添加透明涂层造成的能量损失, 所以我们可以重新表述方程 $\ref{brdf}$ 中的BRDF: 
+
+$$\begin{equation}
+f(v,l)=\fDiffuse(n,l) (1 - F_c) + \fSpecular(n,l) (1 - F_c)^2 + f_c(n,l)
+\end{equation}$$
+
+其中 $F_c$ 为透明涂层BRDF的Fresnel项, $f_c$ 为透明涂层BRDF. 将镜面反射分量乘以 $(1 - F_c)^2$ 是为了在光进入并留在透明涂层时保持能量守恒. 将漫反射分量乘以 $1-F_c$ 是尝试保证能量守恒. 
+
+### 透明涂层参数化
+
+透明涂层材质模型包含先前为标准材质模型定义的所有参数, 以及表[clearCoatParameters]中给出的两个参数. 
+
+
+        参数      |      定义
+----------------------:|:---------------------
+**ClearCoat 涂层强度**          | 透明涂层的强度. 介于0和1之间的标量
+**ClearCoatRoughness 涂层粗糙度** | 透明涂层的感知光滑度或粗糙度. 介于0和1之间的标量
+[表 [clearCoatParameters]: 透明涂层模型的参数]
+
+我们对透明涂层的粗糙度参数进行了重新映射和区间限定, 采用方式类似于对标准材质粗糙度参数的处理. 主要区别在于, 我们希望将透明涂层粗糙度的范围从[0..1]降低为较小的[0..0.6]. 这种重映射是任意的, 但符合以下事实: 透明涂层几乎总是有光泽的. 重映射后的值是平方, 可以产生感知线性粗糙度值. 
+
+图[clearCoat]和图[clearCoatRoughness]展示了透明涂层参数对表面外观的影响. 
+
+![图[clearCoat]: 透明涂层强度从0.0(左)到1.0(右)变化, 金属度为1.0, 粗糙度为0.8](images/material_clear_coat1.png)
+
+![图[clearCoatRoughness]: 透明涂层粗糙度从0.0(左)到1.0(右)变化, 金属度为1.0, 粗糙度为0.8, 透明涂层强度为1.0](images/material_clear_coat2.png)
+
+清单[clearCoatBRDF]展示了在标准表面响应中重新映射, 参数化和积分之后透明涂层材质模型的GLSL实现. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void BRDF(...) {
+    // 根据标准模型计算Fd和Fr.
+
+    // 重新映射和线性化透明涂层的粗糙度
+    clearCoatRoughness = mix(0.089, 0.6, clearCoatRoughness);
+    clearCoatLinearRoughness = clearCoatRoughness * clearCoatRoughness;
+
+    // 透明涂层BRDF
+    float  Dc = D_GGX(clearCoatLinearRoughness, NoH);
+    float  Vc = V_Kelemen(clearCoatLinearRoughness, LoH);
+    float  Fc = F_Schlick(0.04, LoH) * clearCoat; // clear coat strength
+    float Frc = (Dc * Vc) * Fc;
+
+    // 考虑基层的能量损失
+    return color * ((Fd + Fr * (1.0 - Fc)) * (1.0 - Fc) + Frc);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [clearCoatBRDF]: 透明涂层BRDF的GLSL实现]
+
+### 基层的修改
+
+透明涂层的存在意味着我们应该重新计算 $\fNormal$, 因为它通常基于空气-材料界面. 因此, 基层需要基于透明涂层-材质界面来计算 $\fNormal$. 
+
+这可以通过以下方式实现, 先根据 $\fNormal$ 计算材质的折射率(IOR), 再根据新计算的IOR和透明涂层的IOR(1.5)计算新的 $\fNormal$. 
+
+首先, 我们计算基层的IOR: 
+
+$$
+IOR_{base} = \frac{1 + \sqrt{\fNormal}}{1 - \sqrt{\fNormal}}
+$$
+
+然后, 我们根据这个新得到的折射率计算新的 $\fNormal$: 
+
+$$
+f_{0_{base}} = \left( \frac{IOR_{base} - 1.5}{IOR_{base} + 1.5} \right) ^2
+$$
+
+由于透明涂层的IOR是固定的, 我们可以将两个步骤结合起来进行简化: 
+
+$$
+f_{0_{base}} = \frac{\left( 1 - 5 \sqrt{\fNormal} \right) ^2}{\left( 5 - \sqrt{\fNormal} \right) ^2}
+$$
+
+我们还应该根据透明涂层的IOR来修改基层的表观粗糙度, 但我们暂时忽略这些. 
+
+## 各向异性模型
+
+前面讨论的标准材质模型只能描述各向同性表面, 也就是在所有方向上性质都相同的表面. 然而, 现实世界中的许多材料, 如拉丝金属, 只能使用各向异性模型进行模拟. 
+
+![图[anisotropic]: 各向同性材料(左)和各向异性材料(右)的比较](images/material_anisotropic.png)
+
+### 各向异性镜面BRDF
+
+可以对先前的各向同性镜面BRDF进行修改以处理各向异性材质. Burley使用各向异性GGX NDF实现了这一目标: 
+
+$$\begin{equation}
+D_{aniso}(h,\alpha) = \frac{1}{\pi \alpha_t \alpha_b} \frac{1}{[(\frac{t \cdot h}{\alpha_t})^2 + (\frac{b \cdot h}{\alpha_b})^2 + (\NoH)^2]^2}
+\end{equation}$$
+
+不幸的是, 这个NDF依赖于两个辅助粗糙度项: 沿副切线方向的粗糙度 $\alpha_b$, 以及沿切线方向的粗糙度 $\alpha_t$. Neubelt和Pettineo [#Neubelt13]提出了一种根据 _各向异性度_ 参数从 $\alpha_t$ 计算 $\alpha_b$ 的方法, 此参数描述了材质的两个粗糙度之间的关系: 
+
+$$
+\begin{align*}
+  \alpha_t &= \alpha \\
+  \alpha_b &= lerp(0, \alpha, 1 - anisotropy)
+\end{align*}
+$$
+
+[#Burley12]提出的关系有所不同, 可以提供更美观, 更直观的结果, 但计算代价稍高一些: 
+
+$$
+\begin{align*}
+  \alpha_t &= \frac{\alpha}{\sqrt{1 - 0.9 \times anisotropy}} \\
+  \alpha_b &= \alpha \sqrt{1 - 0.9 \times anisotropy}
+\end{align*}
+$$
+
+不过, 我们选择使用[#kulla17]提出的关系, 因为它可以创建尖锐的高光: 
+
+$$
+\begin{align*}
+  \alpha_t &= \alpha \times (1 + anisotropy) \\
+  \alpha_b &= \alpha \times (1 - anisotropy)
+\end{align*}
+$$
+
+请注意, 除法线方向外, 这个NDF还需要切线方向和副切线方向. 由于法线映射也需要这些方向, 因此提供这些方向可能不是问题. 
+
+清单[anisotropicBRDF]给出了最终的实现. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float at = max(linearRoughness * (1.0 + anisotropy), 0.001);
+float ab = max(linearRoughness * (1.0 - anisotropy), 0.001);
+
+float D_GGX_Anisotropic(float NoH, const vec3 h,
+        const vec3 t, const vec3 b, float at, float ab) {
+    float ToH = dot(t, h);
+    float BoH = dot(b, h);
+    float a2 = at * ab;
+    highp vec3 v = vec3(ab * ToH, at * BoH, a2 * NoH);
+    highp float v2 = dot(v, v);
+    float w2 = a2 / v2;
+    return a2 * w2 * w2 * (1.0 / PI);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [anisotropicBRDF]: Burley各向异性NDF的GLSL实现]
+
+此外, [#Heitz14]提出了一个各向异性遮蔽-阴影函数, 用于匹配高度相关的GGX分布. 通过使用可见度函数, 可以大大地简化遮蔽-阴影项: 
+
+$$\begin{equation}
+G(v,l,h,\alpha) = \frac{\chi^+(\VoH) \chi^+(\LoH)}{1 + \Lambda(v) + \Lambda(l)}
+\end{equation}$$
+
+$$\begin{equation}
+\Lambda(m) = \frac{-1 + \sqrt{1 + \alpha_0^2 \tan^2\theta_m}}{2} = \frac{-1 + \sqrt{1 + \alpha_0^2 \frac{1 - \cos^2 \theta_m}{\cos^2 \theta_m}}}{2}
+\end{equation}$$
+
+其中
+
+$$\begin{equation}
+\alpha_0 = \sqrt{\cos^2 \phi_0 \alpha_x^2 + \sin^2 \phi_0 \alpha_y^2}
+\end{equation}$$
+
+推导后我们得到: 
+
+$$\begin{equation}
+V_{aniso}(\NoL,\NoV,\alpha) = \frac{1}{2[(\NoL)\hat{\Lambda}_v+(\NoV)\hat{\Lambda}_l]} \\
+\hat{\Lambda}_v = \sqrt{\alpha^2_t(t \cdot v)^2+\alpha^2_b(b \cdot v)^2+(\NoV)^2} \\
+\hat{\Lambda}_l = \sqrt{\alpha^2_t(t \cdot l)^2+\alpha^2_b(b \cdot l)^2+(\NoL)^2}
+\end{equation}$$
+
+每条光线的 $\hat{\Lambda}_v$ 项都相同, 如果需要只计算一次即可. 清单[anisotropicV]给出了最终的实现. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float at = max(linearRoughness * (1.0 + anisotropy), 0.001);
+float ab = max(linearRoughness * (1.0 - anisotropy), 0.001);
+
+float V_SmithGGXCorrelated_Anisotropic(float at, float ab, float ToV, float BoV,
+        float ToL, float BoL, float NoV, float NoL) {
+    float lambdaV = NoL * length(vec3(at * ToV, ab * BoV, NoV));
+    float lambdaL = NoV * length(vec3(at * ToL, ab * BoL, NoL));
+    float v = 0.5 / (lambdaV + lambdaL);
+    return saturateMediump(v);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [anisotropicV]: 各项异性可见度函数的GLSL实现]
+
+### 各向异性参数化
+
+各向异性材质模型包含先前为标准材质模型定义的所有参数, 以及表[anisotropicParameters]中给出的一个额外参数. 
+
+
+        参数      |      定义
+----------------------:|:---------------------
+**Anisotropy 各向异性度**         | 各向异性程度. 介于-1和1之间的标量
+[表 [anisotropicParameters]: 各向异性模型参数]
+
+不需要进一步重新映射. 请注意, 负值会使各向异性平行于副切线方向, 而不是平行于切线方向. 图[anisotropyParameter]展示了各向异性度参数对粗糙金属表面外观的影响. 
+
+![图[anisotropyParameter]: 各向异性度从0.0(左)到1.0(右)变化](images/materials / anisotropy.png)
+
+## 次表面模型
+
+[TODO]
+
+### 次表面镜面反射BRDF
+
+[TODO]
+
+### 次表面参数化
+
+[TODO]
+
+## 布料模型
+
+前面描述的所有材质模型都是设计用于在宏观和微观层面上模拟致密表面的. 然而, 衣服和织物通常由松散连接的线制成, 这些线可以吸收和散射入射光. 前面提出的微面片BRDF在重现布料的特性方面表现不佳, 因为它们的基本假定是, 表面由随机凹槽构成, 这些凹槽的行为如同完美的镜面. 与坚硬的表面相比, 布料的特点是镜面波瓣更加柔和, 具有较大的衰减, 以及由前向/后向散射引起的模糊光照. 有些织物还会呈现出双色调镜面反射颜色(例如天鹅绒). 
+
+图[materialCloth]展示了传统的微面片BRDF是如何无法描述牛仔面料样品外观的. 表面看起来很僵硬(几乎像塑料一样), 更像是一块油布而不是一件衣服. 该图还显示了由吸收和散射引起的较软的镜面波瓣对于忠实再现织物的重要性. 
+
+![图[materialCloth]: 牛仔面料渲染的比较, 使用了传统的微面片BRDF(左)和我们的布料BRDF(右)](images/screenshot_cloth.png)
+
+天鹅绒是布料材质模型的一个有趣用例. 如图[materialVelvet]所示, 由于前向散射和后向散射, 这类织物表现出强烈的边缘照明. 这些散射事件是由直立在织物表面的纤维引起的. 当入射光与视线方向相反时, 纤维会向前散射光. 同样, 当入射光与视线方向相同时, 纤维会向后散射光. 
+
+![图[materialVelvet]: 表现出前向和后向散射的天鹅绒面料](images/screenshot_cloth_velvet.png)
+
+由于纤维很柔软, 我们理论上应该模拟修整表面的能力. 虽然我们的模型没有复现这个特性, 但它确实模拟了一个可见的前向镜面反射贡献, 这可归因于纤维方向的随机变化. 
+
+值得注意的是, 对有些类型的织物, 使用硬表面材质模型仍然是最好的. 例如, 皮革, 丝绸和缎子都可以使用标准或各向异性材质模型重新创建. 
+
+### 布料镜面BRDF
+
+我们使用的布料镜面BRDF是一种改进的微面片BRDF, 来自Ashikhmin和Premoze在[#Ashikhmin07]中的描述. \在他们的工作中, Ashikhmin和Premoze指出, 分布项对BRDF的贡献最大, 并且阴影/遮蔽项对于他们的天鹅绒分布来说并不是必需的. 分布项本身就是一个反向高斯分布. 这有助于实现模糊光照(前向散射和后向散射), 同时添加了偏移以模拟前向镜面反射的贡献. 所谓的天鹅绒NDF定义如下: 
+
+$$\begin{equation}
+D_{velvet}(v,h,\alpha) = c_{norm}\left[ 1 + 4 \exp\left(\frac{-{\cot}^2\theta_{h}}{\alpha^2}\right) \right]
+\end{equation}$$
+
+这个NDF是相同作者在[#Ashikhmin00]中描述的NDF的变体, 并进行了特别的修改以包含偏移(此处设置为1)和幅度(4). 在[#Neubelt13]中, Neubelt和Pettineo提出了这个NDF的归一化版本: 
+
+$$\begin{equation}
+D_{velvet}(v,h,\alpha) = \frac{1}{\pi(1 + 4\alpha^2)} \left[1 + 4 \frac{\exp\left(\frac{-{\cot}^2\theta_{h}}{\alpha^2}\right)}{{\sin}^4\theta_{h}}\right]
+\end{equation}$$
+
+对于完整的镜面BRDF, 我们也遵循[#Neubelt13], 并用更平滑的变体替代了传统的分母: 
+
+$$\begin{equation}\label{clothSpecularBRDF}
+f_{r}(v,h,\alpha) = \frac{F(v,h) D_{velvet}(v,h,\alpha)}{4[\NoL + \NoV - (\NoL)(\NoV)]}
+\end{equation}$$
+
+天鹅绒NDF的实现如清单[clothBRDF]所示, 实现经过了优化以适合半浮点格式, 并使用三角恒等式避免了计算昂贵的余切. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float D_Ashikhmin(float linearRoughness, float NoH) {
+    // Ashikhmin 2007, "Distribution-based BRDFs"
+	float a2 = linearRoughness * linearRoughness;
+	float cos2h = NoH * NoH;
+	float sin2h = max(1.0 - cos2h, 0.0078125); // 2^(-14/2), so sin2h^2 > 0 in fp16
+	float sin4h = sin2h * sin2h;
+	float cot2 = -cos2h / (a2 * sin2h);
+	return 1.0 / (PI * (4.0 * a2 + 1.0) * sin4h) * (4.0 * exp(cot2) + sin4h);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [clothBRDF]: Ashikhmin天鹅绒NDF的GLSL实现]
+
+在[#Estevez17]中, Estevez和Kulla提出了一种不同的NDF(称为"Charlie"光泽), 它基于指数正弦而不是反向高斯. 这个NDF很有吸引力: 它的参数化感觉更自然, 更直观, 它提供了更柔和的外观, 并且它的实现更简单, 如方程 $\ref{charlieNDF}$ 所示: 
+
+$$\begin{equation}\label{charlieNDF}
+D(m) = \frac{(2 + \frac{1}{\alpha}) \sin \theta^{\frac{1}{\alpha}}}{2 \pi}
+\end{equation}$$
+
+[#Estevez17]也提出了一个新的阴影项, 我们在这里省略了它, 因为计算成本很高. 相反, 我们使用[#Neubelt13]中的可见度项(如上面方程 $\ref{clothSpecularBRDF}$ 所示). 
+这个NDF的实现见清单[clothCharlieBRDF], 实现经过了优化以适合半浮点格式. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float D_Charlie(float linearRoughness, float NoH) {
+    // Estevez and Kulla 2017, "Production Friendly Microfacet Sheen BRDF"
+    float invAlpha  = 1.0 / linearRoughness;
+    float cos2h = NoH * NoH;
+    float sin2h = max(1.0 - cos2h, 0.0078125); // 2^(-14/2), so sin2h^2 > 0 in fp16
+    return (2.0 + invAlpha) * pow(sin2h, invAlpha * 0.5) / (2.0 * PI);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [clothCharlieBRDF]: "Charlie" NDF的GLSL实现]
+
+#### 光泽颜色
+
+为了更好地控制布料的外观, 并使用户能够重新创建双色调镜面反射材质, 我们引入了直接修改镜面反射率的功能. 图[materialClothSheen]给出了使用我们称之为"光泽颜色"(sheen color)的参数的示例. 
+
+![图[materialClothSheen]: 不使用光泽(左)和(右)使用光泽的蓝色面料](images/screenshot_cloth_sheen.png)
+
+### 布料漫反射BRDF
+
+我们的布料材质模型仍然使用Lambertian漫反射BRDF. 然而, 我们对它进行了稍微修改, 以满足能量守恒(类似于我们的透明涂层材质模型的能量守恒), 并提供了可选的次表面散射项. 这个附加项并不是基于物理的, 可用于模拟特定类型织物中光的散射, 部分吸收和再发射. 
+
+首先, 这是不含可选次表面散射的漫反射项: 
+
+$$\begin{equation}
+f_{d}(v,h) = \frac{c_{diff}}{\pi}(1 - F(v,h))
+\end{equation}$$
+
+其中 $F(v,h)$ 为方程 $\ref{clothSpecularBRDF}$ 中布料镜面反射BRDF的Fresnel项. 在实践中, 我们选择省略漫反射分量中的 $1-F(v, h)$ 项. 效果有点微妙, 我们认为这不值得增加计算成本. 
+
+次表面散射是使用包裹漫反射光照技术实现的, 其能量守恒形式为: 
+
+$$\begin{equation}
+f_{d}(v,h) = \frac{c_{diff}}{\pi}(1 - F(v,h)) \left< \NoL + \frac{w}{(1 + w)} \right> \left< c_{subsurface} + \NoL \right>
+\end{equation}$$
+
+其中 $w$ 为介于0和1之间的值, 定义了漫反射光围绕终结器的程度. 为避免引入另一个参数, 我们固定 $w = 0.5$. 请注意, 使用包裹漫反射光照时, 漫反射项不能乘以 $\NoL$. 这种便宜的次表面散射近似的效果可以在图[materialClothSubsurface]中看到. 
+
+![图[materialClothSubsurface]: 白布(左列)与具有棕色次表面散射的白布(右)](images/screenshot_cloth_subsurface.png)
+
+我们的布料BRDF的完整实现如清单[clothFullBRDF], 其中包括了光泽颜色和可选的次表面散射. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// 镜面BRDF
+float D = distributionCloth(linearRoughness, NoH);
+float V = visibilityCloth(NoV, NoL);
+vec3  F = fresnel(sheenColor, LoH);
+vec3 Fr = (D * V) * F;
+
+// 漫反射BRDF
+float diffuse = diffuse(linearRoughness, NoV, NoL, LoH);
+#if defined(MATERIAL_HAS_SUBSURFACE_COLOR)
+// energy conservative wrap diffuse
+diffuse *= saturate((dot(n, light.l) + 0.5) / 2.25);
+#endif
+vec3 Fd = diffuse * pixel.diffuseColor;
+
+#if defined(MATERIAL_HAS_SUBSURFACE_COLOR)
+// 便宜的次表面散射
+Fd *= saturate(subsurfaceColor + NoL);
+vec3 color = Fd + Fr * NoL;
+color *= (lightIntensity * lightAttenuation) * lightColor;
+#else
+vec3 color = Fd + Fr;
+color *= (lightIntensity * lightAttenuation * NoL) * lightColor;
+#endif
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [clothFullBRDF]: 我们的布料BRDF的GLSL实现]
+
+### 布料参数化
+
+除 _金属度_ 和 _反射率_ 参数外, 布料材质模型包含了先前为标准材质模型定义的所有参数. 表[clothParameters]中给出了可以使用的两个额外的参数. 
+
+
+       参数      |      定义
+---------------------:|:---------------------
+**SheenColor 光泽颜色**        | 用于创建双色调镜面反射织物的高光色调(默认值为0.04以匹配标准反射率)
+**SubsurfaceColor 次表面颜色**   | 经材料散射和吸收后的漫反射颜色
+[表 [clothParameters]: 布料模型参数]
+
+
+要创建类似天鹅绒的材质, 可以将基色设置为黑色(或深色). 并将光泽颜色设置为所需的色度信息. 要创建更常见的面料, 如牛仔布, 棉布等, 请使用基色作为色度, 并使用默认的光泽颜色或将光泽颜色设置为基色的亮度。
+
+光照
+
+光照环境的正确性和一致性对于实现合理的视觉效果至关重要. 在调查了现有渲染引擎(如Unity或虚幻引擎4)以及传统的实时渲染文献之后, 很明显, 一致性很难实现. 
+
+例如, 虚幻引擎允许美工人员以发光功率单位流明指定点光源的"亮度". 然而, 平行光的亮度使用任意了未命名的单位表示. 要匹配发光强度为5,000流明的点光源的亮度, 美工必须使用亮度为10的平行光. 这种不匹配使得美工人员在添加, 删除或修改灯光时很难保持场景的视觉完整性. 
+使用单独的任意单位是一个一致的解决方案, 但使得重用照明设备成为一项艰巨的任务. 例如, 室外场景使用亮度为10的平行光作为太阳光, 而所有其他光都相对于该值进行定义. 将这些光移到室内环境会使得它们太亮. 
+
+因此, 我们的目标是默认情况下所有光照都正确, 同时给予美工足够的自由, 让他们可以实现所需的外观. 我们会支持许多种灯光, 它们可以分为两类, 直接光照和间接光照: 
+
+**直接光照**: 点光源, 光度学光源, 面光源. 
+
+**间接光照**: 基于图像的灯光(IBL), 用于局部[^localProbesMobile]和远程光探头. 
+
+[^localProbesMobile]: 局部光探头可能过于昂贵, 无法支持移动设备, 因此我们首先将重点放在处于无穷远的远程光探头上. 
+
+## 单位
+
+下面几节将讨论如何实现各种类型的灯光, 我们建议的方程中使用的不同符号和单位列于表[lightUnits]. 
+
+
+    光度学术语   |      符号      |        单位
+-----------------------:|:------------------:|:-----------------
+发光功率 Luminous power          | $\Phi$             | Lumen ($lm$) 流明
+发光强度 Luminous intensity      | $I$                | Candela ($cd$) or $\frac{lm}{sr}$ 坎德拉
+照度 Illuminance             | $E$                | Lux ($lx$) or $\frac{lm}{m^2}$ 勒克斯
+亮度 Luminance               | $L$                | Nit ($nt$) or $\frac{cd}{m^2}$  尼特
+辐射功率 Radiant power           | $\Phi_e$           | Watt ($W$) 瓦特
+发光效率 Luminous efficacy       | $\eta$             | Lumens per watt ($\frac{lm}{W}$)
+发光比率 Luminous efficiency     | $V$                | 百分比 (%)
+[表 [lightUnits]: 光度学单位]
+
+为获得适当的一致光照, 我们使用的单位必须符合现实场景中发现的各种光强之间的比例. 这些强度的差异可以非常大, 从家用灯泡的大约800 $lm$ 到日光天空和太阳光照的120,000 $lx$. 
+
+实现光照一致性的最简单方法是采用物理灯光单元. 这反过来也会实现光照设备的完全可重用性. 使用物理灯光单位还使得我们能够使用基于物理的相机. 
+
+表[lightTypesUnits]给出了我们计划支持的每种灯光所涉及的灯光单位. 
+
+
+        灯光类型       |        单位
+------------------------:|:---------------------
+平行光 Directional light        | 照度 Illuminance ($lx$ or $\frac{lm}{m^2}$)
+点光源 Point light              | 发光功率 Luminous power ($lm$)
+聚光灯 Spot light               | 发光功率 Luminous power ($lm$)
+光度测量灯 Photometric light        | 发光强度 Luminous intensity ($cd$)
+遮蔽光度测量灯 Masked photometric light | 发光功率 Luminous power ($lm$)
+面光源 Area light               | 发光功率 Luminous power ($lm$)
+基于图像的灯光 Image based light        | 亮度 Luminance ($\frac{cd}{m^2}$)
+[表 [lightTypesUnits]: 每种灯光类型的强度单位]
+
+**关于辐射功率单位的注意事项**
+
+尽管市面上买到的灯泡通常在包装上以流明表示其亮度, 但通常使用其所需的能量(以瓦特为单位)来指代灯泡的亮度. 瓦特数只表示灯泡所用的能量, 而不代表灯泡的亮度. 现在理解这种差异更为重要, 因为有很多更节能的灯泡(卤素灯, LED等). 
+
+然而, 由于美工可能习惯于通过功率来表征灯泡的亮度, 我们应该允许用户使用功率单位来定义灯光的亮度. 转换方法如方程 $\ref {radiantPowerToLuminousPower}$ 所示. 
+
+$$\begin{equation}\label{radiantPowerToLuminousPower}
+\Phi = \Phi_e \eta
+\end{equation}$$
+
+在方程 $\ref {radiantPowerToLuminousPower}$ 中, $ \eta $ 为灯的发光效率, 以流明/瓦表示. 知道了[最大可能的发光效率](http://en.wikipedia.org/wiki/Luminous_efficacy)为683 $ \frac {lm} {W} $, 我们也可以使用发光比率 $V$ (也称为发光系数)来表示, 如方程 $ \ref {radiantPowerLuminousEfficiency} $ 所示. 
+
+$$\begin{equation}\label{radiantPowerLuminousEfficiency}
+\Phi = \Phi_e 683 \times V
+\end{equation}$$
+
+表[lightTypesEfficacy]可作为根据各类灯的发光效率或发光比率将瓦特转换为流明的参考. 维基百科的[luminous efficacy](http://en.wikipedia.org/wiki/Luminous_efficacy)页面提供了更具体的值. 
+
+
+       灯光类型       |  效率 $\eta$   | 比率 $V$
+-----------------------:|:------------------:|:-----------------
+白炽灯 Incandescent            | 14-35              | 2-5%
+LED                     | 28-100             | 4-15%
+荧光灯 Fluorescent             | 60-100             | 9-15%
+[表 [lightTypesEfficacy]: 各种灯光类型的效率和比率]
+
+### 灯光单位验证
+
+使用物理灯光单位的最大优点之一是能够物理地验证我们的方程. 我们可以用专门的设备来测量三个灯光单位. 
+
+#### 照度
+
+到达表面的照度可以用入射光度计测量. 在测试中, 我们使用了[Sekonic L-478D](http://www.sekonic.com/products/l-478d/overview.aspx), 如图[sekonic]所示. 
+
+入射光度计使用白色漫反射圆顶来捕获到达表面的照度. 根据所需的测量, 正确地设置圆顶的取向非常重要. 例如, 在晴朗的日子里, 圆顶垂直于太阳方向得到的结果与圆顶处于水平方向得到的结果会明显不同. 
+
+![图[sekonic]: Sekonic L-478D入射光度计](images/photo_light_meter.jpg)
+
+#### 亮度
+
+表面上的亮度, 或入射光与表面积的乘积, 可以用亮度计来测量, 也就是通常所说的光点测量仪. 入射光度计使用漫反射半球捕捉来自所有方向的光, 而光点测量仪使用屏蔽测量来自单个方向的入射光. 在测试中, 我们使用了[Sekonic 5 degree Viewfinder](http://www.sekonic.com/products/l-478dr/accessories/np-finder-5-degree-for-l-478.aspx), 它可以取代L-478D上的漫反射器, 测量5度锥体中的亮度. 
+
+! [使用特殊取景器作为亮度计的Sekonic L-478D](images/photo_incident_light_meter.jpg)
+
+#### 发光强度
+
+光源的发光强度不能直接测量, 但如果我们知道测量装置与光源之间的距离, 就可以根据测量的照度推算出来. 方程 $\ref {derivedLuminousIntensity}$ 是节[精准光源]中讨论的平方反比律的简单应用. 
+
+$$\begin{equation}\label{derivedLuminousIntensity}
+I = E \cdot d^2
+\end{equation}$$
+
+## 直接光照
+
+在前面的章节中, 我们已经为渲染器支持的所有灯光类型定义了灯光单位, 但还没有为光照方程的结果定义灯光单位. 选择物理灯光单位意味着我们会计算着色器中的亮度值, 因此, 所有灯光评估函数都会计算任一给定点的亮度 $L_{out}$ (或出射辐射). 亮度取决于照度 $E$ 和BSDF $f(v, l)$: 
+
+$$\begin{equation}\label{luminanceEquation}
+L_{out} = f(v,l)E
+\end{equation}$$
+
+### 平行光
+
+平行光的主要用途是为室外环境重建重要的光源, 即太阳和/或月亮. 虽然现实世界中并不存在平行光, 但离光接收器足够远的任何光源都可以假定为平行光(即所有入射光线都是平行的, 如图[directionalLight]所示. 
+
+![图[directionalLight]: 平行光和表面之间的相互作用. 光源是一个虚拟构造, 只能使用方向表示](images/diagram_directional_light.png)
+
+这种近似对于表面漫反射的描述非常好, 但给出的镜面响应不正确. Frostbite引擎通过将"太阳"平行光视为圆盘面光源解决了这个问题. 然而, 我们的测试表明, 增加的计算成本带来的质量提高并不值得.
+
+我们之前曾说过, 我们为平行光选择了一个照度灯光单元($lx$). 这在一定程度上是由于我们很容易得到天空和太阳的照度值(在线查询或使用光度计测量), 而且还可以简化 $\ref {luminanceEquation}$ 中描述亮度的方程. 
+
+$$\begin{equation}\label{directionalLuminanceEquation}
+L_{out} = f(v,l) E_{\bot} \left< \NoL \right>
+\end{equation}$$
+
+在简化的亮度方程 $\ref{directionalLuminanceEquation}$ 中, $E_{\bot}$ 为光源对与其垂直的表面的照度. 如果平行光模拟太阳, $E_{\bot}$ 为垂直于太阳方向的表面的太阳照度. 
+
+表[sunSkyIlluminance]提供了太阳和天空照度的参考值, 测量是在3月的晴天, 美国加利福尼亚州[^illuminanceMeasures]进行的. 
+
+
+          光            |   早上10点   |   中午12点   |  下午5:30  
+--------------------------:|---------:|---------:|---------:
+垂直天空               | 20,000   | 25,000   | 9,000   
+垂直太阳               | 100,000  | 105,000  | 81,000  
+垂直太阳 + 垂直天空  | 120,000  | 130,000  | 90,000  
+[表 [sunSkyIlluminance]: 照度值单位为 $lx$(满月的照度为1 $lx$)]
+
+在运行时计算动态平行光特别便宜, 如清单[glslDirectionalLight]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 l = normalize(-lightDirection);
+float NoL = clamp(dot(n, l), 0.0, 1.0);
+
+// lightIntensity为垂直入射时的照度, 单位 lux
+float illuminance = lightIntensity * NoL;
+vec3 luminance = BSDF(v, l) * illuminance;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [glslDirectionalLight]: 平行光的GLSL实现]
+
+图[directionalLightTest]展示了一个简单场景的光照效果, 使用的是平行光, 设置接近正午太阳(照度值为110,000 $lx$). 为便于说明, 只显示了直接照明. 
+
+![图[directionalLightTest]: 平行光下一系列不同粗糙度的电介质材料](images/screenshot_directional_light.png)
+
+[^illuminanceMeasures]: 使用入射光度计(Sekonic L-478D)进行的测量
+
+### 精准光源
+
+我们的引擎会支持两种类型的精确光源, 大多数(如果不是全部的话)渲染引擎都支持它们: 点光源和聚光灯. 传统上这类光源在物理上是不准确的, 原因有两个: 
+
+1. 它们真的很精准, 而且无限小. 
+2. 它们不遵循[平方反比律](http://en.wikipedia.org/wiki/Inverse-square_law). 
+
+第一个问题可以通过面光源来解决, 但是, 考虑到精准光源很便宜, 尽可能使用无限小的精准光源是可行的. 
+
+第二个问题很容易解决. 对于给定的精准光源, 使其感知强度反比于到观察者距离的平方即可(更确切地说, 是到光接收器的距离). 
+
+对遵循平方反比律的精准光源, 方程 $\ref {luminanceEquation}$ 中的 $E$ 项用方程 $\ref {punctualLightEquation}$ 表示, 其中 $d$ 为曲面上的点到光源的距离. 
+
+$$\begin{equation}\label{punctualLightEquation}
+E = L_{in} \left< \NoL \right> = \frac{I}{d^2} \left< \NoL \right>
+\end{equation}$$
+
+点光源和聚光灯之间的区别在于如何计算 $E$, 特别是如何根据发光功率 $\Phi$ 计算发光强度 $I$. 
+
+#### 点光源
+
+点光源仅由空间中的位置定义, 如图[pointLight]所示. 
+
+![图[pointLight]: 点光源和表面之间的相互作用. 衰减只取决于到光源的距离](images/diagram_point_light.png)
+
+点光源的发光功率是通过在光源立体角上对光强度进行积分得到的, 如公式 $\ref {pointLightLuminousPower}$ 所示. 然后可以容易地从发光功率得到发光强度. 
+
+$$\begin{equation}\label{pointLightLuminousPower}
+\Phi = \int_{\Omega} I dl = \int_{0}^{2\pi} \int_{0}^{\pi} I d\theta d\phi = 4 \pi I \\
+I = \frac{\Phi}{4 \pi}
+\end{equation}$$
+
+通过简单替换方程 $\ref{punctualLightEquation}$ 中的 $I$ 和方程 $\ref{luminanceEquation}$ 中的 $E$, 我们可以将点光源的亮度方程表示为发光功率的函数(参见 $\ref{pointLightLuminanceEquation}$). 
+
+$$\begin{equation}\label{pointLightLuminanceEquation}
+L_{out} = f(v,l) \frac{\Phi}{4 \pi d^2} \left< \NoL \right>
+\end{equation}$$
+
+图[pointLightTest]展示了一个简单场景的光照效果, 使用的是受距离衰减影响的点光源. 为便于说明, 增大了光源衰减. 
+
+![图[pointLightTest]: 使用平方反比律的点光源](images/screenshot_point_light.png)
+
+#### 聚光灯
+
+聚光灯由一个空间位置, 一个方向矢量和两个锥角 $\theta_{inner}$ 和 $\theta_{outer}$ 定义(见图[spotLight]). 这两个角度用于定义聚光灯的角度衰减. 因此, 聚光灯的光照计算函数必须同时考虑平方反比律和这两个角度, 才能正确地计算亮度衰减. 
+
+![图[spotLight]: 聚光灯和表面之间的相互作用. 衰减取决于到光源的距离以及表面与聚光灯方向矢量之间的角度](images/diagram_spot_light.png)
+
+方程 $\ref {spotLightLuminousPower}$ 给出了计算聚光灯发光功率的方法, 方式与点光源的类似, 计算时聚光灯外锥角 $\theta_{outer}$ 的范围为[0..$\pi$]. 
+
+$$\begin{equation}\label{spotLightLuminousPower}
+\Phi = \int_{\Omega} I dl = \int_{0}^{2\pi} \int_{0}^{\theta_{outer}} I d\theta d\phi = 2 \pi (1 - \cos\frac{\theta_{outer}}{2})I \\
+I = \frac{\Phi}{2 \pi (1 - \cos\frac{\theta_{outer}}{2})}
+\end{equation}$$
+
+虽然上面的公式在物理上是正确的, 但它使得聚光灯有点难以使用: 改变外锥角会改变照明级别. 图[spotLightTestFocused]展示了使用聚光灯照亮的相同场景, 外锥角分别为为55度和15度. 注意观察随着圆锥半径的减小, 照明级别是如何增加的. 
+
+![图[spotLightTestFocused]: 聚光灯外锥角的比较, 55度(左)和15度(右)](images/screenshot_spot_light_focused.png)
+
+光照与外锥角的耦合意味着美工无法在不改变感知照明的情况下调整聚光灯的影响锥. 因此, 为美工提供一个参数来禁用此耦合是有意义的. 方程 $\ref {spotLightLuminousPowerB}$ 说明了为此应该如何计算发光功率. 
+
+$$\begin{equation}\label{spotLightLuminousPowerB}
+\Phi = \pi I \\
+I = \frac{\Phi}{\pi} \\
+\end{equation}$$
+
+使用这个计算发光强度的新公式, 图[spotLightTest]中的测试场景对两个圆锥半径表现出相似的照明级别. 
+
+![图[spotLightTest]: 聚光灯外锥角的比较, 55度(左)和15度(右)](images/screenshot_spot_light.png)
+
+如果将光斑反射器替换为可以完美吸收光线的哑光漫反射遮罩, 那么这个新公式也可以视为基于物理的. 
+
+聚光灯计算函数可以用两种方式表示: 
+
+- **带光吸收器**
+  $$\begin{equation}\label{spotAbsorber}
+  L_{out} = f(v,l) \frac{\Phi}{\pi d^2} \left< \NoL \right> \lambda(l)
+  \end{equation}$$
+- **带光反射器**
+  $$\begin{equation}\label{spotReflector}
+  L_{out} = f(v,l) \frac{\Phi}{2 \pi (1 - \cos\frac{\theta_{outer}}{2}) d^2} \left< \NoL \right> \lambda(l)
+  \end{equation}$$
+
+方程 $\ref{spotAbsorber}$ 和 $\ref{spotReflector}$ 中的 $\lambda(l)$ 项是下面的方程
+ $\ref{spotAngleAtt}$ 中的光斑角度衰减系数. 
+
+$$\begin{equation}\label{spotAngleAtt}
+\lambda(l) = \frac{l \times spotDirection - \cos\theta_{outer}}{\cos\theta_{inner} - \cos\theta_{outer}}
+\end{equation}$$
+
+
+#### 衰减函数
+
+对基于物理的精准光源, 必须正确计算平方反比衰减因子. 遗憾的是, 简单的数学公式无法用于实现: 
+
+1. 当物体与光源相交或"接触"光源时, 除以平方距离可导致除以0. 
+
+2. 每条光线的影响范围是无限的( $\frac{I}{d^2}$ 只是渐近的, 永远不会达到0), 这意味着要正确地为像素着色, 我们需要计算世界中的每一条光线. 
+
+
+第一个问题很容易解决, 只要假定精准光源并不是真正的精准, 而是一个小的面光源. 为此, 我们可以简单地将精准光源视为半径为1 cm的球体, 如方程 $\ref{finitePunctualLight}$ 所示. 
+
+$$\begin{equation}\label{finitePunctualLight}
+E = \frac{I}{\max(d^2, {0.01}^2)}
+\end{equation}$$
+
+我们可以通过为每个光源引入影响半径来解决第二个问题. 这种解决方法有几个优点. 工具可以快速地向美工展示每个光源会影响世界的哪些部分(此工具只需绘制以每个光源为中心的球体即可). 渲染引擎可以使用这一额外信息更激进地剔除光线, 美工/开发人员可以通过手动调整光源的影响半径来帮助引擎. 
+
+从数学上讲, 光源的照度在影响半径定义的极限处应该平滑地达到零. [#Karis13]建议对平方反比函数进行加窗处理, 这样大部分灯光的影响不会改变. 建议的窗函数见方程 $\ref{attenuationWindowing}$, 其中 $r$ 为灯光的影响半径. 
+
+$$\begin{equation}\label{attenuationWindowing}
+E = \frac{I}{max(d^2, {0.01}^2)} \left< 1 - \frac{d^4}{r^2} \right>
+\end{equation}$$
+
+清单[glslPunctualLight]给出了如何在GLSL中实现基于物理的精准光源. 请注意, 这段代码中使用的光强度是以 $cd$ 为单位的发光强度 $I$, 从CPU端的光照功率转换而来. 此代码片段未经过优化, 某些计算可以放到CPU执行(例如, 灯光的反向衰减半径的平方, 或光斑比例和角度). 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float getSquareFalloffAttenuation(vec3 posToLight, float lightInvRadius) {
+    float distanceSquare = dot(posToLight, posToLight);
+    float factor = distanceSquare * lightInvRadius * lightInvRadius;
+    float smoothFactor = max(1.0 - factor * factor, 0.0);
+    return (smoothFactor * smoothFactor) / max(distanceSquare, 1e-4);
+}
+
+float getSpotAngleAttenuation(vec3 l, vec3 lightDir,
+        float innerAngle, float outerAngle) {
+    // 缩放和偏移计算可以在CPU端完成
+    float cosOuter = cos(outerAngle);
+    float spotScale = 1.0 / max(cos(innerAngle) - cosOuter, 1e-4)
+    float spotOffset = -cosOuter * spotScale
+
+    float cd = dot(normalize(-lightDir), l);
+    float attenuation = clamp(cd * spotScale + spotOffset, 0.0, 1.0);
+    return attenuation * attenuation;
+}
+
+vec3 evaluatePunctualLight() {
+    vec3 l = normalize(posToLight);
+    float NoL = clamp(dot(n, l), 0.0, 1.0);
+    vec3 posToLight = lightPosition - worldPosition;
+
+    float attenuation;
+    attenuation  = getSquareFalloffAttenuation(posToLight, lightInvRadius);
+    attenuation *= getSpotAngleAttenuation(l, lightDir, innerAngle, outerAngle);
+
+    vec3 luminance = (BSDF(v, l) * lightIntensity * attenuation * NoL) * lightColor;
+    return luminance;
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [glslPunctualLight]: 精准光源的GLSL实现]
+
+### 光度学光源
+
+精准光源是一种非常实用和有效的照明场景的方式, 但美工对光的分布没有足够的控制. 建筑照明设计领域致力于设计满足人类需要的照明系统, 同时考虑到: 
+
+- 光源提供的光量
+- 光源的颜色
+- 光源在空间中的分布
+
+到目前为止, 我们所讨论的光照系统可以很容易地解决前两点, 但我们需要一种方法来定义空间中光的分布. 灯光分布对于室内场景, 或某些类型的室外场景, 甚至道路照明尤为重要. 图[lightDistributionTest]展示了一个由美工控制灯光分布的场景. 当展出物品(例如博物馆, 商店或画廊)时, 会广泛使用这种类型的分布控制. 
+
+![图[lightDistributionTest]: 控制点光源的分布](images/screenshot_photometric_lights.png)
+
+光度学光源使用光度学轮廓曲线来描述其强度分布. 光度学轮廓曲线有两种常用的格式, IES(照明工程学会)和EULUMDAT(欧洲流明数据格式), 但我们将重点关注前者. 许多工具和引擎都支持IES轮廓文件, 例如虚幻引擎4, Frostbite, Renderman, Maya和Killzone. 此外, 灯泡和灯具制造商通常提供IES光源轮廓文件(例如, 飞利浦提供[IES文件扩展数组](http://www.usa.lighting.philips.com/connect/tools_literature/photometric_data_1.wpd)下载). 光度学轮廓曲线在测量光源部分覆盖的灯具或照明设备时特别有用. 灯具会阻挡向某些方向发射的光, 从而形成灯光的分布. 
+
+![可通过光度测量轮廓文件描述的真实灯具的示例](images/photo_photometric_lights.jpg)
+
+IES轮廓存储了围绕被测光源的球体上的不同角度的发光强度. 这种球面坐标系通常被称为光度网, 可以使用[IESviewer](http://www.photometricviewer.com/)等专用工具进行可视化. 下面的图[xarrow]展示的用于Renderman的XArrow IES轮廓文件的光度网[由Pixar提供](http://renderman.pixar.com/view/DP25764). 这张图片还展示了我们的工具`lightgen`在XArrow IES轮廓文件的3D空间中的渲染情况. 
+
+![图[xarrow]: 渲染为光域网和三维空间中的点光源的XArrow IES轮廓](images/screenshot_xarrow.png)
+
+IES格式的文档说明很少, 并且网上找到的文件彼此间存在语法差异的情况并不少见. 理解IES轮廓文件的最佳资源是Ian Ashdown的文档"解析IESNA LM-63光度学数据文件"[#Ashdown98]. 简而言之, IES轮廓以candela为单位存储光源周围不同角度处的发光强度. 对于每个被测的水平角度, 提供了不同垂直角度下的一系列发光强度. 然而, 水平对称的被测光源相当常见. 上面展示的XArrow轮廓是一个很好的例子: 强度随垂直角度(垂直轴)变化, 但在水平轴上是对称的. IES轮廓中垂直角度的范围为0到180度, 水平角度的范围为0到360度. 
+
+图[lightenSamples]展示了Pixar为Renderman提供的一系列IES轮廓文件, 使用我们的`lightgen`工具进行渲染. 
+
+![图[lightenSamples]: 使用lightgen渲染的IES灯光轮廓系列](images/screenshot_lightgen_samples.png)
+
+IES轮廓可以直接用于任何精准光源, 点光源或聚光灯. 为此, 我们必须首先处理IES轮廓文件, 并根据光度配置文件生成纹理. 出于性能考虑, 我们生成的光度学轮廓是一维纹理, 表示特定垂直角度处(即每个像素代表垂直角度)所有水平角度的平均发光强度. 要真正表示光度学光源, 我们应该使用2D纹理, 但由于大多数灯光在水平面上是完全或大部分对称的, 因此我们可以接受这种近似. 存储在纹理中的值使用IES轮廓中定义的最大强度的倒数进行归一化. 这样我们可以轻松地以任何浮点格式存储纹理, 或者以一点精度为代价, 以8位亮度纹理(例如灰度PNG)存储纹理. 存储归一化值还允许我们将光度曲线视为遮蔽: 
+
+光度曲线作为遮蔽: 发光强度由美工通过设置灯光的发光功率来定义, 与任何其他精准光源一样. 从IES轮廓计算的灯光强度会除以美工定义的强度. IES轮廓包含发光强度, 但只适用于裸露的灯泡, 而测量强度值需要考虑到照明设备. 为测量灯具的强度, 而不是灯泡, 我们使用来自轮廓曲线的强度进行单位球体的蒙特卡罗积分[^xarrowIntensity]. 
+
+光度曲线: 发光强度来自轮廓本身. 从1D纹理采样的所有值都简单地乘以最大强度. 为了方便起见, 我们还提供了一个乘数因子. 
+
+光度分布图在渲染时可以作为简单衰减使用. 亮度方程 $\ref {photometricLightEvaluation}$ 给出了光度学点光源的计算函数. 
+
+$$\begin{equation}\label{photometricLightEvaluation}
+L_{out} = f(v,l) \frac{I}{d^2} \left< \NoL \right> \Psi(l)
+\end{equation}$$
+
+$\Psi(l)$ 项为光度衰减函数. 它不仅取决于光矢量, 也取决于光的方向. 聚光灯已经有了一个方向矢量, 但我们还需要为光度学点光源引入一个. 
+
+通过在精准光源的实现中添加一个新的衰减因子, 很容易在GLSL中实现光度衰减功能(清单[glslPunctualLight]). 修改后的实现如清单[glslPhotometricPunctualLight]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float getPhotometricAttenuation(vec3 posToLight, vec3 lightDir) {
+    float cosTheta = dot(-posToLight, lightDir);
+    float angle = acos(cosTheta) * (1.0 / PI);
+    return texture2DLodEXT(lightProfileMap, vec2(angle, 0.0), 0.0).r;
+}
+
+vec3 evaluatePunctualLight() {
+    vec3 l = normalize(posToLight);
+    float NoL = clamp(dot(n, l), 0.0, 1.0);
+    vec3 posToLight = lightPosition - worldPosition;
+
+    float attenuation;
+    attenuation  = getSquareFalloffAttenuation(posToLight, lightInvRadius);
+    attenuation *= getSpotAngleAttenuation(l, lightDirection, innerAngle, outerAngle);
+    attenuation *= getPhotometricAttenuation(l, lightDirection);
+
+    float luminance = (BSDF(v, l) * lightIntensity * attenuation * NoL) * lightColor;
+    return luminance;
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [glslPhotometricPunctualLight]: 光度学轮廓衰减的GLSL实现]
+
+灯光强度在CPU端计算(清单[photometricLightIntensity]), 它取决于光度轮廓是否用作遮蔽. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float multiplier;
+// 光度轮廓用作遮蔽
+if (photometricLight.isMasked()) {
+    // 所需强度由美工设定
+    // 来自蒙特卡罗的积分强度
+    // 灯具周围单位球体上的积分
+    multiplier = photometricLight.getDesiredIntensity() /
+            photometricLight.getIntegratedIntensity();
+} else {
+    // 为方便使用提供的乘数, 默认设置为1.0
+    multiplier = photometricLight.getMultiplier();
+}
+
+// 最大强度来自IES轮廓, 单位cd
+float lightIntensity = photometricLight.getMaxIntensity() * multiplier;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [photometricLightIntensity]: 在CPU上计算光度学灯光的强度]
+
+[^xarrowIntensity]: XArrow轮曲线廓声明的发光强度为1,750 lm, 但蒙特卡罗积分显示强度仅为350 lm. 
+
+### 面光源
+
+[TODO]
+
+### 光源参数化
+
+与标准材质模型的参数化类似, 我们的目标是让光源参数化直观且易于美工和开发人员使用. 本着这种精神, 我们决定将光源颜色(或色调)与光源强度分开. 因此, 光源颜色定义为线性RGB颜色(或者为了方便, 在工具UI中使用sRGB). 
+
+光源参数的完整列表见表[lightParameters]. 
+
+
+          参数        |      定义
+--------------------------:|:---------------------
+**类型 Type**                   | Directional平行光, point点光源, spot聚光灯, area面光源
+**方向 Direction**              | 用于平行光, 点光源, 光度学点光源, 线状和管状面光源(方向性)
+**颜色 Color**                  | 发射光的颜色, 线性RGB颜色. 在工具中可以使用sRGB颜色或色温指定
+**强度 Intensity**              | 灯光的亮度. 单位取决于光源类型
+**Falloff radius 衰减半径**         | 最大影响距离
+**Inner angle 内锥角**            | 聚光灯内圆锥体的角度, 以度为单位
+**Outer angle 外锥角**            | 聚光灯外圆锥体的角度, 以度为单位
+**Length 长度**                 | 面光源的长度, 用于创建线性或管状灯光
+**Radius 半径**                 | 面光源的半径, 用于创建球形或管状灯光
+**Photometric profile 光度学轮廓**    | 表示光度学光源轮廓的纹理, 只能用于精准光源
+**Masked profile 遮蔽轮廓**         | 布尔值, 指示是否将IES轮廓用作遮蔽. 作为遮蔽时, 光源的亮度会乘以一个因子, 这个因子为用户指定的强度与积分IES轮廓强度之比. 如果不用作遮蔽, 会忽略用户指定的强度, 但使用IES乘数代替
+**光度乘数** | 光度学光源的亮度乘数(如果禁用IES遮蔽)
+[表[lightParameters]: 光源类型参数]
+
+**注意**: 为了简化实现, 在发送到着色器之前, 所有发光功率都会转换为发光强度($cd$). 转换依赖于光源, 前面几节对此有所说明. 
+
+**注意**: 可以从其他参数推断光源类型(例如, 点光源的长度, 半径, 内角和外角都为0). 
+
+#### 色温
+
+然而, 真实世界中的人造灯光通常由它们的色温来定义, 以开尔文(K)为单位. 光源的色温是理想黑体辐射体的温度, 此黑体辐射出的光的色调与光源相当. 为方便起见, 这些工具应该支持美工使用色温指定光源的色调(有意义的范围为1,000 K到12,500 K). 
+
+要根据温度计算RGB值, 我们可以使用Planck(普朗克)轨迹, 如图[planckianLocus]所示. 此轨迹为白炽黑体的颜色随物体温度的变化在色度空间中的路径. 
+
+![图[planckianLocus]: 在CIE 1931色度图上显示的Planck轨迹(来源: 维基百科)](images/diagram_planckian_locus.png)
+
+根据此轨迹计算RGB值的最简单方法是使用[#Krystek85]中给出的公式. Krystek算法(方程 $\ref {krystek}$)使用了CIE 1960(UCS)空间, 其公式如下, 其中的 $T$ 为需要的温度, $u$ 和 $v$ 为UCS中的坐标. 
+
+$$\begin{equation}\label{krystek}
+u(T) = \frac{0.860117757 + 1.54118254 \times 10^{-4}T + 1.28641212 \times 10^{-7}T^2}{1 + 8.42420235 \times 10^{-4}T + 7.08145163 \times 10^{-7}T^2} \\
+v(T) = \frac{0.317398726 + 4.22806245
+ \times 10^{-5}T + 4.20481691 \times 10^{-8}T^2}{1 - 2.89741816
+ \times 10^{-5}T + 1.61456053 \times 10^{-7}T^2}
+\end{equation}$$
+
+在1,000K到15,000K的温度范围内, 这个近似方法大约可以精确到$9 \times 10^{-5}$. 根据CIE 1960空间的坐标, 我们可以使用方程 $\ref {cieToxyY}$ 计算xyY空间(CIES 1931)的坐标. 
+
+$$\begin{equation}\label{cieToxyY}
+x = \frac{3u}{2u - 8v + 4} \\
+y = \frac{2v}{2u - 8v + 4}
+\end{equation}$$
+
+上述公式适用于黑体色温, 因此也适用于标准光源的相关色温. 如果要计算D系列标准CIE光源的精确色度坐标, 我们可以使用方程 $\ref{seriesDtoxyY}$. 
+
+$$\begin{equation}\label{seriesDtoxyY}
+x = \begin{cases} 0.244063 + 0.09911 \frac{10^3}{T} + 2.9678 \frac{10^6}{T^2} - 4.6070 \frac{10^9}{T^3} & 4,000K \le T \le 7,000K \\
+0.237040 + 0.24748 \frac{10^3}{T} + 1.9018 \frac{10^6}{T^2} - 2.0064 \frac{10^9}{T^3} & 7,000K \le T \le 25,000K \end{cases} \\
+y = -3x^2 + 2.87 x - 0.275
+\end{equation}$$
+
+然后, 我们可以从xyY空间转换到CIE XYZ空间(方程 $\ref{xyYtoXYZ}$). 
+
+$$\begin{equation}\label{xyYtoXYZ}
+X = \frac{xY}{y} \\
+Z = \frac{(1 - x - y)Y}{y}
+\end{equation}$$
+
+根据我们的需要, 我们将固定 $Y = 1$. 这样我们可以使用简单的3x3矩阵从XYZ空间转换到线性RGB, 如方程 $ \ref {XYZtoRGB} $所示. 
+
+$$\begin{equation}\label{XYZtoRGB}
+\left[ \begin{matrix} R \\ G \\ B \end{matrix} \right] = M^{-1} \left[ \begin{matrix} X \\ Y \\ Z \end{matrix} \right]
+\end{equation}$$
+
+变换矩阵M可以根据目标RGB颜色空间的原色计算. 方程 $\ref {XYZtoRGBValues}$ 给出了使用sRGB颜色空间的逆矩阵进行的转换. 
+
+$$\begin{equation}\label{XYZtoRGBValues}
+\left[ \begin{matrix} R \\ G \\ B \end{matrix} \right] = \left[ \begin{matrix} 3.2404542 & -1.5371385 & -0.4985314 \\ -0.9692660 & 1.8760108 & 0.0415560 \\ 0.0556434 & -0.2040259 & 1.0572252 \end{matrix} \right] \left[ \begin{matrix} X \\ Y \\ Z \end{matrix} \right]
+\end{equation}$$
+
+这些操作得到的结果是sRGB颜色空间中的线性RGB三元组. 由于我们关心结果的色度, 我们必须应用归一化步骤, 以避免得到的值大于1.0并扭曲颜色: 
+
+$$\begin{equation}\label{normalizedRGB}
+\hat{C}_{linear} = \frac{C_{linear}}{\max(C_{linear})}
+\end{equation}$$
+
+最后, 我们必须使用sRGB光电转换函数(OECF, 如方程 $\ref{OECFsRGB}$ 所示)来获得可显示的值(如果传递给渲染器用于着色, 则该值应保持线性). 
+
+$$\begin{equation}\label{OECFsRGB}
+C_{sRGB} = \begin{cases} 12.92 \times \hat{C}_{linear} & \hat{C}_{linear} \le 0.0031308 \\
+1.055 \times \hat{C}_{linear}^{\frac{1}{2.4}} - 0.055 & \hat{C}_{linear} \gt 0.0031308 \end{cases}
+\end{equation}$$
+
+为方便起见, 图[colorTemperatureScaleCCT]展示了从1,000K到12,500K的相关色温范围. 下面使用的所有颜色都假定以CIE $D_{65}$ 作为白点(与sRGB颜色空间一致). 
+
+![图[colorTemperatureScaleCCT]: 相关色温的比例](images/diagram_color_temperature_cct.png)
+
+同样, 图[colorTemperatureScaleCIE]展示了D系列CIE标准光源的范围, 从1,000K到12,500K. 
+
+![图[colorTemperatureScaleCIE]: D系列CIE标准光源的比例](images/diagram_color_temperature_cie.png)
+
+作为参考, 图[colorTemperatureScaleCCTClamped]展示了相关色温的范围, 但没有使用方程 $\ref {normalizedRGB}$ 中给出的归一化步骤. 
+
+![图[colorTemperatureScaleCCTClamped]: 相关色温的非归一化比例](images/diagram_color_temperature_cct_clamped.png)
+
+表[colorTemperatureSamples]给出了以sRGB色样表示的各种常见光源的相关色温. 这些颜色是相对于 $ D_{65} $ 白点的, 因此它们的感知色调可能会因显示器的白点不同而有所不同. 详细信息可参阅[太阳是什么颜色的?](http://jila.colorado.edu/~ajsh/colour/Tspectrum.html). 
+
+
+    温度 (K)  |          光源        |                 颜色
+--------------------:|:-----------------------------|-------------------------------------------------------
+1,700-1,800          | 火柴火焰                   | <div style="background-color: #ff7d00; width: 60px">&nbsp;</div>
+1,850-1,930          | 蜡烛火焰                 | <div style="background-color: #ff8701; width: 60px">&nbsp;</div>
+2,000-3,000          | 朝阳/夕阳        | <div style="background-color: #ffa64c; width: 60px">&nbsp;</div>
+2,500-2,900          | 家用钨丝灯泡 | <div style="background-color: #ffb05e; width: 60px">&nbsp;</div>
+3,000                | 钨灯 1K             | <div style="background-color: #ffb86f; width: 60px">&nbsp;</div>
+3,200-3,500          | 石英灯                | <div style="background-color: #ffbf7b; width: 60px">&nbsp;</div>
+3,200-3,700          | 荧光灯           | <div style="background-color: #ffbf7b; width: 60px">&nbsp;</div>
+3,275                | 钨灯 2K             | <div style="background-color: #ffc180; width: 60px">&nbsp;</div>
+3,380                | 钨灯 5K, 10K        | <div style="background-color: #ffc486; width: 60px">&nbsp;</div>
+5,000-5,400          | 正午太阳                  | <div style="background-color: #ffe9d7; width: 60px">&nbsp;</div>
+5,500-6,500          | 日光 (太阳 + 天空)         | <div style="background-color: #fff3f1; width: 60px">&nbsp;</div>
+5,500-6,500          | 透过云/雾霾的太阳      | <div style="background-color: #fff3f1; width: 60px">&nbsp;</div>
+6,000-7,500          | 阴天                 | <div style="background-color: #faf6ff; width: 60px">&nbsp;</div>
+6,500                | RGB显示器白点      | <div style="background-color: #fff8fe; width: 60px">&nbsp;</div>
+7,000-8,000          | 户外阴影区域        | <div style="background-color: #ebecff; width: 60px">&nbsp;</div>
+8,000-10,000         | 部分多云天空            | <div style="background-color: #d6e0ff; width: 60px">&nbsp;</div>
+[表 [colorTemperatureSamples]: 常见光源的归一化关联色温]
+
+### 预曝光灯光
+
+基于物理的渲染和物理灯光单位提出了一个有趣的挑战: 如何存储和处理由光照代码生成的大范围数值? 假定在着色器中以全精度执行计算, 我们仍然希望能够将光照通道的线性输出存储在大小合理的缓冲区中("RGB16F"或等效的). 实现这一目标的最明显和最简单的方法是, 在输出光照通道的结果之前简单地应用相机曝光(更多信息见基于物理的相机章节). 这一简单步骤如清单[preexposedLighting]所示: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+fragColor = luminance * camera.exposure;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [preexposedLighting]: 对光照通道的输出进行预曝光以便可以使用半浮点缓冲]
+
+这个方法解决了存储问题, 但需要使用单精度浮点执行中间计算. 不过, 我们更愿意使用半精度浮点数执行所有(或至少大部分)光照工作. 这样做可以大大提高性能, 减小功耗, 尤其是在移动设备上. 然而, 半精度浮点数不适合这类工作, 因为普通照度和亮度值(例如太阳)可能超出它们的范围. 解决方法是简单地预曝光灯光本身, 而不是预曝光光照通道的结果. 如果更新灯光常量缓冲区的成本较低, 这可以在CPU上有效地完成. 这也可以在GPU上完成, 如清单[preexposedLights]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// 范围(intensity)和精度(exposure)必须以高/单精度输入
+// 输出为中/半精度
+float computePreExposedIntensity(highp float intensity, highp float exposure) {
+    return intensity * exposure;
+}
+
+Light getPointLight(uint index) {
+    Light light;
+    uint lightIndex = // 获取灯光编号;
+
+    // 强度必须为高/单精度
+    highp vec4 colorIntensity  = lightsUniforms.lights[lightIndex][1];
+
+    // 预曝光灯光
+    light.colorIntensity.w = computePreExposedIntensity(
+            colorIntensity.w, frameUniforms.exposure);
+
+    return light;
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [preexposedLights]: 预曝光灯光以便整个着色管道可以使用半精度浮点数]
+
+在实践中, 我们预曝光以下灯光:
+- 精准光源(点光源和聚光灯): 使用GPU
+- 平行光: 使用CPU
+- 基于图像的灯光: 使用CPU
+- 材质发射光: 使用GPU
+
+## 基于图像的光照
+
+在现实生活中, 光来自各个方向, 或是直接来自光源, 或是间接来自环境中物体的反弹, 并在这个过程中被部分吸收. 在某种程度上, 可以将物体周围的整个环境视为光源. 图像, 特别是立方体贴图, 是编码这种"环境光"的好方法. 这称为基于图像的光照(IBL), 或有时称为间接光照. 
+
+![图[iblBall]: 此处显示的物体只使用图像编码的环境光进行光照. 请注意使用此技术可以实现的微妙光照效果.](images/screenshot_ball_ibl.png)
+
+基于图像的光照存在局限性. 显然, 必须以某种方式获取环境图像, 正如我们将在下面看到的那样, 在将其用于光照之前, 需要进行预处理. 通常, 环境图像是在现实世界中离线获取的, 或者由引擎离线或实时生成; 无论哪种方式, 都需要使用局部或远程探头. 
+
+这些探头可用于获取远程或局部的环境. 在本文档中, 我们将重点放在远程环境探头上, 其中假定光线来自无限远(这意味着物体表面上的每个点都使用相同的环境贴图). 
+
+整个环境都会为物体表面上的特定点提供光; 这称为_辐照度_ ($E$). 从物体反弹出的光称为辐射($L_{out}$). 入射光照必须一致性地用于BRDF的漫反射和镜面反射部分. 
+
+基于图像的光照(IBL)的辐照度和材质模型(BRDF) $f(\Theta)$[^ibl1]之间的相互作用所产生的辐射 $L_{out}$ 的计算方法如下: 
+
+$$\begin{equation}
+L_{out}(n, v, \Theta) = \int_\Omega  f(l, v, \Theta) L_{\bot}(l) \left< \NoL \right> dl 
+\end{equation}$$ 
+
+请注意, 这里我们正在查看 **宏观** 层面的表面行为(不要与微观层面的方程混淆), 这就是为什么它只依赖于 $ \vec n $和 $ \vec v $. 基本上, 我们将BRDF应用于来自各个方向并编码在IBL中的"点光源". 
+
+### IBL类型 ###
+
+现代渲染引擎中使用的IBL有四种常见类型: 
+
+- **远程光探头**, 用于捕捉"无限远"处的光照信息, 可以忽略视差. 远程探头通常包括天空, 远处的景观特征或建筑物等. 它们可以由渲染引擎捕捉, 也可以高动态范围图像(HDRI)的形式从相机获得. 
+
+- **局部光探头**, 用于从特定角度捕捉世界的某个区域. 捕捉会投影到立方体或球体上, 具体取决于周围的几何体. 局部探头比远程探头更精确, 在为材质添加局部反射时特别有用. 
+
+- **平面反射**, 用于通过渲染镜像场景来捕捉反射. 此技术只适用于平面, 如建筑地板, 道路和水. 
+
+- **屏幕空间反射**, 基于在深度缓冲区使用光线行进方法渲染的场景(例如使用前一帧)来捕捉反射. SSR效果很好, 但可能非常昂贵. 
+
+此外, 我们必须区分静态和动态IBL. 实现完全动态的昼夜循环需要动态地重新计算远程光探头[^iblTypes1]. 平面和屏幕空间反射本质都是动态的. 
+
+### IBL单位 ###
+
+如前面直接光照部分所述, 我们实现的所有灯光都必须使用物理单位. 因此, 我们的IBL将使用亮度单位 $ \frac {cd} {m^2} $, 这也是所有直接光照方程的输出单位. 对于引擎捕获的光探头(动态或静态离线)使用亮度单位非常简单. 
+
+然而, 高动态范围图像处理起来更麻烦些. 相机不会记录测量的亮度, 而是记录依赖于设备的值, 这个值只是与原始场景的亮度 _相关_. 因此, 我们必须为美工提供一个乘数, 这样他们能够恢复或至少近似地恢复原始的绝对亮度. 
+
+为正确地重建HDRI的亮度用于IBL, 美工必须做的不只是简单地拍摄环境照片, 还要记录额外的信息: 
+
+- **颜色校准**: 使用灰度卡或[MacBeth ColorChecker](http://en.wikipedia.org/wiki/ColorChecker)
+
+- **相机设置**: 光圈, 快门和ISO
+
+- **亮度样本**: 使用光点/亮度计
+
+[TODO]测量并列出常用亮度值(晴空, 内部等)
+
+### 处理光探头 ###
+
+我们之前看到IBL的辐射度是通过在表面半球上进行积分来计算的. 显然, 对于实时渲染来说这种做法太过昂贵, 所以我们必须首先对光探头进行预处理, 将它们转换为更适合实时交互的格式. 
+
+以下各节将讨论用于加速计算光探头的技术: 
+
+- **镜面反射率**: 预滤波重要性采样与拆分求和近似
+
+- **漫反射率**: 辐照度贴图和球谐函数
+
+### 远程光探头 ###
+
+#### 漫反射BRDF积分 ####
+
+使用Lambertian BRDF [^iblDiffuse1], 我们得到了辐射度: 
+
+$$
+\begin{align*}
+   f_d(\sigma) &= \frac{\sigma}{\pi} \\
+L_d(n, \sigma) &= \int_{\Omega} f_d(\sigma) L_{\bot}(l) \left< \NoL \right> dl \\
+               &= \frac{\sigma}{\pi} \int_{\Omega} L_{\bot}(l) \left< \NoL \right> dl \\
+               &= \frac{\sigma}{\pi} E_d(n) \quad \text{其中辐照度} \;
+        E_d(n) = \int_{\Omega} L_{\bot}(l) \left< \NoL \right> dl
+\end{align*}
+$$
+
+或者, 在离散域中: 
+
+$$ E_d(n) \equiv \sum_{\forall \, i \in image} L_{\bot}(s_i) \left< n \cdot s_i \right> \Omega_s $$
+
+$ \Omega_s $ 为与样本 $i$ 相关联的立体角[^iblDiffuse2]. 
+
+辐照度积分 $\Ed$ 可以简单地, 尽管很慢[^iblDiffuse3], 预先计算并存储到立方体贴图中, 以便在运行时可以高效访问. 通常, _image_ 是一个立方体贴图或等距矩形图像. $ \frac {\sigma} {\pi} $ 项独立于IBL, 在运行时添加以获得_辐照度_. 
+
+![图 [iblOriginal]: 基于图像的环境](images/ibl/ibl_river_roughness_m0.png style="max-width:100%;")
+
+![图[iblIrradiance]: 使用Lambertian BRDF的基于图像的辐照度图](images/ibl/ibl_irradiance.png style ="max-width: 100％;")
+
+
+[^ibl1]: $ \Theta $ 代表材质模型 $f$ 的参数, 即: _粗糙度_, 反照度等......
+
+[^iblTypes1]: 这可以通过混合静态探头, 或通过随时间推移工作负载来完成
+
+[^iblDiffuse1]: Lambertian BRDF 不依赖于 $\vec l$, $\vec v$ 或 $\theta$, 因此 $L_d(n,v,\theta) \equiv L_d(n,\sigma)$
+
+[^iblDiffuse2]: 对于立方体贴图, $\Omega_s$ 可以使用 $\frac{2\pi}{6 \cdot width \cdot height}$ 近似
+
+[^iblDiffuse3]: $O(12\,n^2\,m^2)$, $n$ 和 $m$ 分别为环境尺寸和预计算的立方体贴图
+
+
+然而, 辐照度也可以通过分解为球谐函数(SH, 在球谐函数章节有更详细地说明)进行实时计算, 所得结果非常接近精确值并且成本不高. 通常最好避免在移动设备上获取纹理, 并释放纹理单元. 即使将其存储到立方体贴图中, 使用SH分解预先计算积分, 然后再渲染也要快几个数量级. 
+
+SH分解在概念上类似于傅里叶变换, 它以频域中的正交基表示信号. 我们最感兴趣的性质为: 
+
+- 编码 $ \cosTheta $ 只需要很少的系数
+
+- 对具有 _圆对称_ 的内核进行卷积非常便宜, 并且结果为SH空间中的乘积
+
+在实践中, $ \cosTheta $ 只要4或9个系数(即: 2或3个波段)就足够了, 这意味着 $\Lt$ 同样不需要更多系数. 
+
+![图[iblSH3]: 3个波段(9个系数)](images/ibl/ibl_irradiance_sh3.png style ="max-width: 100％;")
+
+![图[iblSH2]: 2个波段(4个系数)](images/ibl/ibl_irradiance_sh2.png style ="max-width: 100％;")
+
+
+在实践中, 我们使用 $ \cosTheta $ 对$ \Lt $ 进行预卷积, 并使用基本缩放因子 $ K_l^m $ 预先缩放这些系数, 以便着色器中的重建代码尽可能简单: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 irradianceSH(vec3 n) {
+    // uniform vec3 sphericalHarmonics[9]
+    // 我们只使用前两个波段以获得更好的性能
+    return
+          sphericalHarmonics[0]
+        + sphericalHarmonics[1] * (n.y)
+        + sphericalHarmonics[2] * (n.z)
+        + sphericalHarmonics[3] * (n.x)
+        + sphericalHarmonics[4] * (n.y * n.x)
+        + sphericalHarmonics[5] * (n.y * n.z)
+        + sphericalHarmonics[6] * (3.0 * n.z * n.z - 1.0)
+        + sphericalHarmonics[7] * (n.z * n.x)
+        + sphericalHarmonics[8] * (n.x * n.x - n.y * n.y);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [irradianceSH]: 根据预缩放的SH重建辐照度的GLSL代码]
+
+注意, 使用2个波段时, 上面的计算变为 $4 \times 4$ 矩阵与矢量的乘法. 
+
+另外, 由于使用 $K_l^m$ 进行了预缩放, SH系数可视为颜色, 特别地`sphericalHarmonics[0]`直接就是平均辐照度. 
+
+
+#### 高光BRDF积分 ####
+
+正如我们在上面看到的, IBL的辐照度和BRDF之间的相互作用产生的辐射 $ \Lout $ 为: 
+
+$$\begin{equation}\label{specularBRDFIntegration}
+\Lout(n, v, \Theta) = \int_\Omega f(l, v, \Theta) \Lt(l) \left< \NoL \right> \partial l 
+\end{equation}$$ 
+
+我们可以识别出 $f(l, v, \Theta) \left< \NoL \right>$ 对 $\Lt$ 的卷积, 即, 使用BRDF作为核对环境进行 *过滤*. 事实上, 粗糙度较高时, 镜面反射看起来更 *模糊*. 
+
+将 $f$ 的表达式代入方程 $\ref{specularBRDFIntegration}$, 我们得到: 
+
+$$\begin{equation}
+\Lout(n,v,\Theta) = \int_\Omega D(l, v, \alpha) F(l, v, f_0, f_{90}) V(l, v, \alpha) \left< \NoL \right> \Lt(l) \partial l
+\end{equation}$$ 
+
+此表达式取决于积分内的 $v$, $\alpha$, $f_0$ 和 $f_{90}$, 这使得其计算成本极高, 不适合用于移动设备上的实时渲染(即便使用了预过滤的重要性抽样).  
+
+##### 简化BRDF积分 #####
+
+由于没有封闭形式的解或计算 $\Lout$ 积分的简单方法, 我们使用一个简化的方程: $\hat{I}$, 由此我们假定 $v=n$, 即视线方向 $v$ 始终等于表面法向 $n$. 很明显, 这一假定使得卷积的所有效果都与视线无关, 比如更接近观察者的反射模糊会增加(也称为拉伸反射).  
+
+这个简化也会对恒定环境产生严重影响, 例如白色的物体, 因为它会影响结果的常数项的大小(即DC). 通过在简化积分中使用一个比例因子 $K$, 我们至少可以校正这一点, 这样可以确保如果选择的值合适, 得到的平均辐照度仍然正确. 
+
+    -  $I$ 为原始积分, 即: $I(g) = \int_\Omega g(l) \left< \NoL \right> \partial l$
+    - $ \hat {I} $ 为简化积分, 其中 $ v = n $
+    - $K$ 为比例因子, 确保平均辐照度不被 $\hat{I}$ 改变
+    - $\tilde {I}$ 为 $I$ 的最终近似值, $ \tilde {I} = \hat {I} \times K $ 
+
+
+因为 $I$ 是一个积分乘积, 所以可以进行分解. 即: $I(g()f()) = I(g())I(f())$. 
+
+由此, 
+
+$$\begin{equation}
+I( f(\Theta) \Lt ) \approx \tilde{I}( f(\Theta) \Lt )                       \\
+\tilde{I}( f(\Theta) \Lt ) = K \times \hat{I}( f(\Theta) \Lt )              \\
+K = \frac{I(f(\Theta))}{\hat{I}(f(\Theta))}
+\end{equation}$$ 
+
+
+从上面的方程我们可以看出, 当 $\Lt$ 为常量时, $\tilde {I}$ 等价于 $I$, 由此得到正确的结果: 
+
+$$\begin{align*}
+\tilde{I}(f(\Theta)\Lt^{constant}) &= \Lt^{constant} \hat{I}(f(\Theta)) \frac{I(f(\Theta))}{\hat{I}(f(\Theta))} \\
+                                   &= \Lt^{constant} I(f(\Theta))                                               \\
+                                   &= I(f(\Theta)\Lt^{constant})
+\end{align*}$$
+
+
+同样, 我们也可以证明, 当 $v=n$ 时结果正确, 因为在这种情况下 $I = \hat {I}$: 
+
+$$\begin{align*}
+\tilde{I}(f(\Theta)\Lt) &= I(f(\Theta)\Lt) \frac{I(f(\Theta))}{I(f(\Theta))}    \\
+                        &= I(f(\Theta)\Lt)
+\end{align*}$$
+
+最后, 通过将 $\Lt = \bar{\Lt} + (\Lt - \bar{\Lt}) = \bar{\Lt} + \Delta\Lt$ 代入$\tilde{I}$, 我们可以证明比例因子 $K$ 满足平均辐照度($\bar{\Lt}$)要求. 
+
+$$\begin{align*}
+\tilde{I}(f(\Theta)\Lt) &= \tilde{I}\left[f\left(\Theta\right) \left(\bar{\Lt} + \Delta\Lt\right)\right] \\
+                        &= K \times \hat{I}\left[f\left(\Theta\right) \left(\bar{\Lt} + \Delta\Lt\right)\right] \\
+                        &= K \times \left[\hat{I}\left(f\left(\Theta\right)\bar{\Lt}\right) + \hat{I}\left(f\left(\Theta\right)\Delta\Lt\right)\right] \\
+                        &= K \times \hat{I}\left(f\left(\Theta\right)\bar{\Lt}\right) + K \times \hat{I}\left(f\left(\Theta\right) \Delta\Lt\right) \\
+                        &= \tilde{I}\left(f\left(\Theta\right)\bar{\Lt}\right) + \tilde{I}\left(f\left(\Theta\right) \Delta\Lt\right) \\
+                        &= I\left(f\left(\Theta\right)\bar{\Lt}\right) + \tilde{I}\left(f\left(\Theta\right) \Delta\Lt\right)
+\end{align*}$$
+
+上述结果表明, 平均辐照度的计算正确, 即: $I(f(\Theta)\bar{\Lt})$. 
+
+考虑这种近似的一种方法是, 它将辐照度 $\Lt$ 分成两部分, 平均 $\bar{\Lt}$ 和来自平均的 $\Delta\Lt$, 然后正确地计算平均部分的积分, 再加上delta部分的简化积分: 
+
+$$\begin{equation}
+approximation(\Lt) = correct(\bar{\Lt}) + simplified(\Lt - \bar{\Lt})
+\end{equation}$$ 
+
+
+
+现在, 让我们来看看每一项: 
+
+$$\begin{equation}\label{iblPartialEquations}
+\hat{I}(f(n, \alpha) \Lt) = \int_\Omega f(l, n, \alpha) \Lt(l) \left< \NoL \right> \partial l   \\
+\hat{I}(f(n, \alpha))     = \int_\Omega f(l, n, \alpha)        \left< \NoL \right> \partial l   \\
+I(f(n, v, \alpha))        = \int_\Omega f(l, n, v, \alpha)     \left< \NoL \right> \partial l
+\end{equation}$$
+
+
+所有这三个方程都可以很容易地预先计算好并存储在查找表中, 如下所述. 
+ 
+
+##### 离散域 #####
+
+在离散域中, $\ref{iblPartialEquations}$ 中的方程变为: 
+
+$$\begin{equation}
+\hat{I}(f(n, \alpha) \Lt) \equiv \frac{1}{N}\sum_{\forall \, i \in image} f(l_i, n, \alpha) \Lt(l_i) \left<\NoL\right>  \\
+\hat{I}(f(n, \alpha))     \equiv \frac{1}{N}\sum_{\forall \, i \in image} f(l_i, n, \alpha)          \left<\NoL\right>  \\
+I(f(n, v, \alpha))        \equiv \frac{1}{N}\sum_{\forall \, i \in image} f(l_i, n, v, \alpha)       \left<\NoL\right>
+\end{equation}$$
+
+然而, 在实践中, 我们使用 _重要性抽样_, 需要考虑分布的 $pdf$, 并添加一项 $\frac{\left<\VoH\right>}{D(h_i, \alpha)\left<\NoH\right>}$. 
+请参阅 IBL重要性采样 一节: 
+
+$$\begin{equation}\label{iblImportanceSampling}
+\hat{I}(f(n, \alpha) \Lt) \equiv \frac{4}{N}\sum_i^N f(l_i, n, \alpha)    \frac{\left<\VoH\right>}{D(h_i, \alpha)\left<\NoH\right>} \Lt(l_i) \left<\NoL\right>  \\
+\hat{I}(f(n, \alpha))     \equiv \frac{4}{N}\sum_i^N f(l_i, n, \alpha)    \frac{\left<\VoH\right>}{D(h_i, \alpha)\left<\NoH\right>}          \left<\NoL\right>  \\
+I(f(n, v, \alpha))        \equiv \frac{4}{N}\sum_i^N f(l_i, n, v, \alpha) \frac{\left<\VoH\right>}{D(h_i, \alpha)\left<\NoH\right>}          \left<\NoL\right>
+\end{equation}$$
+
+
+回顾对于 $\hat{I}$, 我们假定 $v = n$, 方程 $\ref{iblImportanceSampling}$ 简化为: 
+
+$$\begin{equation}
+\hat{I}(f(n, \alpha) \Lt) \equiv \frac{4}{N}\sum_i^N \frac{f(l_i, n,    \alpha)}{D(h_i, \alpha)} \Lt(l_i) \left<\NoL\right>  \\
+\hat{I}(f(n, \alpha))     \equiv \frac{4}{N}\sum_i^N \frac{f(l_i, n,    \alpha)}{D(h_i, \alpha)}          \left<\NoL\right>  \\
+I(f(n, v, \alpha))        \equiv \frac{4}{N}\sum_i^N \frac{f(l_i, n, v, \alpha)}{D(h_i, \alpha)} \frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right>
+\end{equation}$$
+
+然后, 可以将前两个方程合并, 得到 $LD(n, \alpha) = \frac{\hat{I}(f(n, \alpha) \Lt)}{\hat{I}(f(n, \alpha))}$
+
+$$\begin{equation}\label{iblLD}
+LD(n, \alpha)       \equiv \frac{\sum_i^N \frac{f(l_i, n, \alpha)}{D(h_i, \alpha)} \Lt(l_i) \left<\NoL\right>}{\sum_i^N \frac{f(l_i, n, \alpha)}{D(h_i, \alpha)}\left<\NoL\right>}
+\end{equation}$$
+$$\begin{equation}\label{iblDFV}
+I(f(n, v, \alpha))  \equiv \frac{4}{N}\sum_i^N \frac{f(l_i, n, v, \alpha)}{D(h_i, \alpha)} \frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right>
+\end{equation}$$
+
+请注意, 到这里, 我们几乎可以离线计算两个剩下的方程. 唯一的困难在于, 当预先计算这些积分时, 我们不知道 $f_0$ 或 $f_{90}$. 在后面我们会看到, 我们可以在运行时将这些项合并到方程 $\ref{iblDFV}$, 可惜, 对方程 $\ref{iblLD}$ 无法这样做, 我们必须假定 $f_0 = f_{90} = 1$ (即: Fresnel项的值总是1). 
+
+我们还必须处理BRDF的可见度项, 在实践中, 保留它得到的结果与实际情况相比略有降低, 所以我们也假定 $V = 1$. 
+
+让我们替换方程 $\ref{iblLD}$ 和 $\ref{iblDFV}$ 中的 $f$: 
+
+$$\begin{equation}
+f(l_i, n, \alpha) = D(h_i, \alpha)F(f_0, f_{90}, \left<\VoH\right>)V(l_i, v, \alpha)
+\end{equation}$$
+
+第一个简化是, BRDF中的 $D(h_i, \alpha)$ 与分母(来自重要性抽样的 $pdf$)相抵消, $F$ 和 $V$ 消失, 因为我们假定它们的值为1.  
+
+$$\begin{equation}
+LD(n, \alpha)       \equiv \frac{\sum_i^N V(l_i, v, \alpha)\left<\NoL\right>\Lt(l_i) }{\sum_i^N \left<\NoL\right>}
+\end{equation}$$
+$$\begin{equation}\label{iblFV}
+I(f(n, v, \alpha))  \equiv \frac{4}{N}\sum_i^N \color{green}{F(f_0, f_{90}, \left<\VoH\right>)} V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right>
+\end{equation}$$
+
+现在, 让我们将Fresnel项代入方程 $\ref{iblFV}$: 
+
+$$\begin{equation}
+F(f_0, f_{90}, \left<\VoH\right>) = f_0 (1 - F_c(\left<\VoH\right>)) + f_{90} F_c(\left<\VoH\right>) \\
+F_c(\left<\VoH\right>) = (1 - \left<\VoH\right>)^5
+\end{equation}$$
+
+
+$$\begin{equation}
+I(f(n, v, \alpha))  \equiv \frac{4}{N}\sum_i^N \left[\color{green}{f_0 (1 - F_c(\left<\VoH\right>)) + f_{90} F_c(\left<\VoH\right>)}\right] V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right> \\
+\end{equation}$$
+
+$$
+\begin{align*}
+I(f(n, v, \alpha))  \equiv & \color{green}{f_0   } \frac{4}{N}\sum_i^N  \color{green}{(1 - F_c(\left<\VoH\right>))} V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right> \\
+                    +      & \color{green}{f_{90}} \frac{4}{N}\sum_i^N  \color{green}{     F_c(\left<\VoH\right>) } V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right>
+\end{align*}
+$$
+
+
+最后, 我们提取可以离线计算的方程(即: 不依赖于运行时参数 $f_0$ 和 $f_{90}$ 的部分): 
+
+$$\begin{equation}\label{iblAllEquations}
+DFG_1(\alpha, \left<\NoV\right>) = \frac{4}{N}\sum_i^N  \color{green}{(1 - F_c(\left<\VoH\right>))} V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right> \\
+DFG_2(\alpha, \left<\NoV\right>) = \frac{4}{N}\sum_i^N  \color{green}{     F_c(\left<\VoH\right>) } V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right> \\
+I(f(n, v, \alpha))  \equiv   \color{green}{f_0} \color{red}{DFG_1(\alpha, \left<\NoV\right>)} + \color{green}{f_{90}} \color{red}{DFG_2(\alpha, \left<\NoV\right>)}
+\end{equation}$$
+
+
+请注意, $DFG_1$ 和 $DFG_2$ 仅取决于 $\NoV$, 即法向 $n$ 和视线方向 $v$ 之间的夹角. 这是正确的, 因为积分关于 $n$ 对称. 
+进行积分时, 我们可以选择任何 $v$, 只要它满足 $\NoV$ (例如: 当计算 $\VoH$ 时). 
+
+
+将所有结果重新组合在一起, 得到: 
+
+$$
+\begin{align*}
+\Lout(n,v,\alpha,f_0,f_{90})     &\simeq \big[ f_0 \color{red}{DFG_1(\NoV, \alpha)} + f_{90} \color{red}{DFG_2(\NoV, \alpha)} \big] \times LD(n, \alpha) \\
+DFG_1(\alpha, \left<\NoV\right>) &=      \frac{4}{N}\sum_i^N  \color{green}{(1 - F_c(\left<\VoH\right>))} V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right> \\
+DFG_2(\alpha, \left<\NoV\right>) &=      \frac{4}{N}\sum_i^N  \color{green}{     F_c(\left<\VoH\right>) } V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right> \\
+LD(n, \alpha)                    &=      \frac{\sum_i^N V(l_i, n, \alpha)\left<\NoL\right>\Lt(l_i) }{\sum_i^N \left<\NoL\right>}
+\end{align*}     
+$$
+
+#### $DFG_1$ 和 $DFG_2$ 项的可视化####
+
+$DFG_1$ 和 $DFG_2$ 项既可以在常规2D纹理中预先计算并使用 $(\NoV, \alpha)$ 作为索引进行双线性采样, 也可以在运行时使用表面的解析近似进行计算. 
+请参阅附录中的示例代码. 
+预先计算的纹理见表[textureDFG]. 
+预计算的C++实现见节[预计算L用于基于图像的光照]. 
+
+
+$DFG_1$                  | $DFG_2$                  | ${ DFG_1, DFG_2, 0 }$
+-------------------------|--------------------------|----------------------
+![](images/ibl/dfg1.png) | ![](images/ibl/dfg2.png) | ![](images/ibl/dfg.png)
+[表 [textureDFG]: Y轴: $\alpha$. X轴: $\cos \theta$]
+
+
+$DFG_1$ 和 $DFG_2$ 处于方便的 $[0,1]$ 范围内, 但是8位的纹理没有足够的精度, 并且会引起问题. 
+不幸的是, 在移动设备上, 16位或浮点纹理并不普遍, 而且采样器数量也有限. 
+尽管使用纹理的着色器代码非常简单, 有吸引力, 但使用解析近似可能更好. 但请注意, 由于我们只需要存储两项, OpenGL ES 3.0的RG16F纹理格式是一个很好的选择. 
+
+这种解析近似见[#Karis14], 其本身基于[#Lazarov13]. 
+[#Narkowicz14]是另一个有趣的近似. 请注意, 这两个近似与节[多重散射的预积分]中介绍的能量补偿项不兼容. 
+表[textureApproxDFG]给出了这些近似的直观表示. 
+
+$DFG_1$                         | $DFG_2$                         | ${ DFG_1, DFG_2, 0 }$
+--------------------------------|---------------------------------|----------------------
+![](images/ibl/dfg1_approx.png) | ![](images/ibl/dfg2_approx.png) | ![](images/ibl/dfg_approx.png)
+[表 [textureApproxDFG]: Y轴: $\alpha$. X轴: $\cos \theta$]
+
+
+#### $LD$ 项的可视化####
+
+$LD$ 为一个函数对环境的卷积, 此函数只取决于 $\alpha$ 参数(本身与粗糙度有关, 请参见节[粗糙度重映射和区间限定]). 
+$LD$ 可以方便地存储在mip映射的立方体贴图中, 其中增加的LOD接收使用增大的粗糙度进行预先过滤的环境. 这很有效, 因为这种卷积是一个强大的低通滤波器. 为了充分利用每个mipmap级别, 有必要重新映射 $\alpha$; 我们发现使用 $\gamma = 2$ 的幂函数重新映射效果很好并且很方便. 
+
+$$
+\begin{align*}
+    \alpha       &= roughness^2                        \\
+    lod_{\alpha} &= \alpha^{\frac{1}{2}} = roughness   \\
+\end{align*}
+$$
+
+参见以下示例: 
+
+
+![$\alpha=0.0$](images/ibl/ibl_river_roughness_m0.png style="max-width:100%;")
+![$\alpha=0.2$](images/ibl/ibl_river_roughness_m1.png style="max-width:100%;")
+![$\alpha=0.4$](images/ibl/ibl_river_roughness_m2.png style="max-width:100%;")
+![$0.6$](images/ibl/ibl_river_roughness_m3.png style="max-width:100%;")
+![$0.8$](images/ibl/ibl_river_roughness_m4.png style="max-width:100%;")
+
+#### 间接镜面反射分量和间接漫反射分量的可视化 ####
+
+图[iblVisualized]展示了间接光照如何与电介质和导体相互作用. 为了便于说明, 去除了直接光照. 
+
+![图[iblVisualized]: 间接漫反射和镜面反射的分解](images/ibl/ibl_visualization.jpg)
+
+#### IBL计算的实现 ####
+
+清单[iblEvaluation]提供了一个计算IBL的GLSL实现, 使用了前面章节中描述的各种纹理.  
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 ibl(vec3 n, vec3 v, vec3 diffuseColor, vec3 f0, vec3 f90, float roughness) {
+    vec3 r = reflect(n);
+    vec3 Ld = textureCube(irradianceEnvMap, r) * diffuseColor;
+    vec3 Lld = textureCube(prefilteredEnvMap, r, computeLODFromRoughness(roughness));
+    vec2 Ldfg = textureLod(dfgLut, vec2(dot(n, v), roughness), 0.0).xy;
+    vec3 Lr =  (f0 * Ldfg.x + f90 * Ldfg.y) * Lld;
+    return Ld + Lr;
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [iblEvaluation]: 基于图像的光照计算的GLSL实现]
+
+然而, 我们可以通过使用球谐函数而不是辐照度立方贴图, 以及 $DFG$ LUT的解析近似来保存几个纹理查找表, 如清单[optimizedIblEvaluation]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 irradianceSH(vec3 n) {
+    // uniform vec3 sphericalHarmonics[9]
+    // 我们只使用前两个波段以获得更好的性能
+    return
+          sphericalHarmonics[0]
+        + sphericalHarmonics[1] * (n.y)
+        + sphericalHarmonics[2] * (n.z)
+        + sphericalHarmonics[3] * (n.x)
+        + sphericalHarmonics[4] * (n.y * n.x)
+        + sphericalHarmonics[5] * (n.y * n.z)
+        + sphericalHarmonics[6] * (3.0 * n.z * n.z - 1.0)
+        + sphericalHarmonics[7] * (n.z * n.x)
+        + sphericalHarmonics[8] * (n.x * n.x - n.y * n.y);
+}
+
+// 注意: 如果使用了多重散射的能量补偿项此近似无效// 我们使用DFG LUT分辨率来实现多重散射
+vec2 prefilteredDFG(float NoV, float roughness) {
+    // 基于Lazarov的Karis逼近
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.040, -0.040);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+    基于Karis的Zioma逼近
+    // return vec2(1.0, pow(1.0 - max(roughness, NoV), 3.0));
+}
+
+// 注意: 这是上面函数的DFG LUT实现
+vec2 prefilteredDFG_LUT(float coord, float NoV) {
+    // coord = sqrt(linear_roughness)
+    // 计算mipmap时IBL预过滤代码使用的贴图
+    return textureLod(dfgLut, vec2(NoV, coord), 0.0).rg;
+}
+
+vec3 evaluateSpecularIBL(vec3 r, float roughness) {
+    // 假定为256x256的立方体贴图, 有9个mip级别
+    float lod = 8.0 * roughness;
+    // decodeEnvironmentMap() 用于解码RGBM, 
+    // 或者no-op, 如果立方体贴图存储在浮点纹理中
+    return decodeEnvironmentMap(textureCubeLodEXT(environmentMap, r, lod));
+}
+
+vec3 evaluateIBL(vec3 n, vec3 v, vec3 diffuseColor, vec3 f0, vec3 f90, float roughness) {
+    float NoV = max(dot(n, v), 0.0);
+    vec3 r = reflect(-v, n);
+
+    // 间接镜面
+    vec3 indirectSpecular = evaluateSpecularIBL(r, roughness);
+    vec2 env = prefilteredDFG_LUT(roughness, NoV);
+    vec3 specularColor = f0 * env.x + f90 * env.y;
+
+    // 间接漫反射
+    // 乘以Lambertian BRDF来计算辐射的辐照度
+    // 对于迪斯尼BRDF, 我们必须删除Fresnel项
+    // 它取决于NoL(它会放到SH中). Lambertian BRDF
+    // 可以直接在SH中烘焙以节省这里的乘法
+    vec3 indirectDiffuse = max(irradianceSH(n), 0.0) * Fd_Lambert();
+
+    // 间接贡献
+    return diffuseColor * indirectDiffuse + indirectSpecular * specularColor;
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [optimizedIblEvaluation]: 基于图像的光照计算的GLSL实现]
+
+
+#### 多重散射的预积分 ####
+
+在节[镜面反射的能量损失]中, 我们讨论了如何使用第二个缩放的镜面波瓣来补偿由于只考虑BRDF中的单重散射事件而导致的能量损失. 
+这个能量补偿波瓣使用的缩放项取决于 $r$, 其定义如下: 
+
+$$\begin{equation}
+r = \int_{\Omega} D(l,v) V(l,v) \left< \NoL \right> \partial l
+\end{equation}$$
+
+或者, 使用重要性抽样进行计算(参见IBL的重要性抽样一节): 
+
+$$\begin{equation}
+r \equiv  \frac{4}{N}\sum_i^N  V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right>
+\end{equation}$$
+
+这个方程非常类似于方程 $\ref{iblAllEquations}$ 中的 $DFG_1$ 和 $DFG_2$. 
+事实上, 除没有Fresnel项外, 它们是一样的. 
+
+通过进一步假定 $f_{90} = 1$, 我们可以重写 $DFG_1$ 和 $DFG_2$以及 $\Lout$ 的重建: 
+
+$$
+\begin{align*}
+\Lout(n,v,\alpha,f_0)                           &\simeq \big[ (1 - f_0) \color{red}{DFG_1^{multiscatter}(\NoV, \alpha)} + f_0 \color{red}{DFG_2^{multiscatter}(\NoV, \alpha)} \big] \times LD(n, \alpha) \\
+DFG_1^{multiscatter}(\alpha, \left<\NoV\right>) &=      \frac{4}{N}\sum_i^N  \color{green}{F_c(\left<\VoH\right>)} V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right> \\
+DFG_2^{multiscatter}(\alpha, \left<\NoV\right>) &=      \frac{4}{N}\sum_i^N                                        V(l_i, v, \alpha)\frac{\left<\VoH\right>}{\left<\NoH\right>} \left<\NoL\right> \\
+LD(n, \alpha)                                   &=      \frac{\sum_i^N V(l_i, n, \alpha)\left<\NoL\right>\Lt(l_i) }{\sum_i^N V(l_i, n, \alpha)\left<\NoL\right>}
+\end{align*}     
+$$
+
+只要简单地用这两个新的 $DFG$ 项替换节[预计算L用于基于图像的光照]给出的实现中所用的项即可: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float Fc = pow(1 - VoH, 5.0f);
+r.x += Gv * Fc;
+r.y += Gv;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [multiscatterIBLPreintegration]: 多重散射 $L_{DFG}$ 项的C++实现]
+
+要进行重建, 我们需要稍微修改清单[multiscatterIBLEvaluation]: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec2 dfg = textureLod(dfgLut, vec2(dot(n, v), roughness), 0.0).xy;
+// (1 - f0) * dfg.x + f0 * dfg.y
+vec3 specularColor = mix(dfg.xxx, dfg.yyy, f0);
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [multiscatterIBLEvaluation]: 基于图像的光照计算的GLSL实现, 使用了多重散射LUT]
+
+
+#### 总结 ####
+
+为计算远程的基于图像的灯光的镜面反射贡献, 我们不得不做出一些近似和折衷: 
+
+    - $v = n$, 到目前为止,在积分IBL的非常数部分时, 
+      此假定引入的误差最大. 这导致与视点的粗糙度有关的各向异性
+      完全丧失.
+
+    - IBL非常数部分的粗糙度贡献被离散分级, 
+      并使用三线性滤波在不同级别之间进行插值. 这在低粗糙度时最为明显(例如: 
+      对一个9 LOD的立方体贴图约为0.0625). 
+
+    - 由于使用mipmap级别存储预积分的环境, 
+       因此它们无法用于纹理缩小, 而这是它们应该做的. 这可能导致高频区域, 
+      低粗糙度环境, 遥远或较小的物体会出现锯齿或莫尔条纹. 
+      由于缓存访问模式不佳, 这也会影响性能.  
+
+    - IBL的非常数部分没有Fresnel项. 
+
+    - IBL非常数部分的可见度=1. 
+
+    - Schlick的Fresnel项
+
+    - 多重散射情况下 $f_{90} = 1$. 
+
+
+![图[iblPrefilterVsImportanceSampling]: 重要性采样参考(上)和预滤波IBL(中)之间的比较. ](images/ibl/ibl_prefilter_vs_reference.png)
+
+![图[iblStretchyReflectionLoss]: 假定 $v=n$ 引起的反射错误(下) - "弹性反射"丢失. ](images/ibl/ibl_stretchy_reflections_error.png)
+
+![图[iblRoughnessInLods0]: 由于在粗糙度 = 0.0625的立方体贴图LOD中存储粗糙度而导致的错误(即: 在各级之间精确采样). 
+请注意, 我们看到的不是模糊, 而是两个模糊之间的"交叉阴纹". ](images/ibl/ibl_trilinear_0.png)
+
+![图[iblRoughnessInLods1]: 由于在粗糙度 = 0.125的立方体贴图LOD中存储粗糙度而导致的错误(即: 在1级精确采样). 
+当粗糙度与LOD非常匹配时, 在立方体贴图中进行三线性滤波引起的误差会减小. 注意由于 $v=n$ 在掠射角处引起的误差. ](images/ibl/ibl_trilinear_1.png)
+
+![图[iblMoirePattern]: 处于由彩色垂直条纹(隐藏了天空盒)组成的环境中, $\alpha = 0$ 的金属球体上由于纹理缩小而形成的莫尔图案. ](images/ibl/ibl_no_mipmaping.png)
+
+
+### 透明涂层 ###
+
+当对IBL进行采样时, 透明涂层作为第二镜面反射的波瓣来计算. 这个镜面波瓣的取向沿视线方向, 因为我们无法在半球上进行合理地积分. 清单[clearCoatIBL]给出了在实践中使用的这种近似. 它还给出了能量守恒步骤. 需要注意的是, 第二镜面波瓣的计算方式与主镜面波瓣完全相同, 使用了相同的DFG近似, . 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// clearCoat_NoV == shading_NoV 如果透明涂层没有自己的法线贴图
+float Fc = F_Schlick(0.04, 1.0, clearCoat_NoV) * clearCoat;
+// 基础层衰减的能量补偿
+iblDiffuse  *= 1.0 - Fc;
+iblSpecular *= sq(1.0 - Fc);
+iblSpecular += specularIBL(r, clearCoatRoughness) * Fc;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [clearCoatIBL]: 用于基于图像的光照的透明涂层镜面波瓣的GLSL实现]
+
+### 各向异性 ###
+
+[#McAuley15]给出了一种称为"弯曲反射矢量"的技术, 该技术基于[#Revie12]. 弯曲反射矢量是各向异性光照的粗略近似, 但替代方案是使用重要性采样. 这种近似足够便宜, 并可以提供很好的结果, 如图[anisotropicIBL1]和图[anisotropicIBL2]所示. 
+
+![图[anisotropicIBL1]: 使用弯曲法线的各向异性间接镜面反射(左: 粗糙度0.3, 右: 粗糙度: 0.0; 二者: 各向异性1.0)](images/screenshot_anisotropic_ibl1.jpg)
+
+![图[anisotropicIBL2]: 具有不同粗糙度, 金属度等的各向异性反射](images/screenshot_anisotropic_ibl2.jpg)
+
+这种技术的实现很简单, 如清单[bentReflectionVector]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 anisotropicTangent = cross(bitangent, v);
+vec3 anisotropicNormal = cross(anisotropicTangent, bitangent);
+vec3 bentNormal = normalize(mix(n, anisotropicNormal, anisotropy));
+vec3 r = reflect(-v, bentNormal);
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [bentReflectionVector]: 弯曲反射矢量的GLSL实现]
+
+通过接受负的"各向异性"值可以使这种技术变得更加有用, 如清单[bentReflectionVectorDirection]所示. 当各向异性为负值时, 高光不在切线方向上, 而是在副切线方向上. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 anisotropicDirection = anisotropy >= 0.0 ?bitangent : tangent;
+vec3 anisotropicTangent = cross(anisotropicDirection, v);
+vec3 anisotropicNormal = cross(anisotropicTangent, anisotropicDirection);
+vec3 bentNormal = normalize(mix(n, anisotropicNormal, anisotropy));
+vec3 r = reflect(-v, bentNormal);
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [bentReflectionVectorDirection]: 弯曲反射向量的GLSL实现]
+
+图[anisotropicDirection]展示了实践中这个修改的实现. 
+
+![图[anisotropicDirection]: 使用正(左)和负(右)值控制各向异性方向](images/screenshot_anisotropy_direction.png)
+
+### 次表面 ###
+
+[TODO]解释次表面和IBL
+
+### 布料 ###
+
+布料模型的IBL实现比其他材质模型更复杂. 主要区别在于使用了不同的NDF(Ashikhmin, 高度相关的Smith GGX). 如本节所述, 在计算IBL时, 我们使用拆分求和近似来计算BRDF的DFG项. 由于这个DFG项基于错误的NDF, 我们必须找到一个新的近似. 
+
+我们使用的近似完全是解析性的, 是根据图[clothDFGReference]所示的蒙特卡罗参考数据手动拟合的(每个数据点使用 $2^{22}$个样本, 而不是重要性采样). 这一视觉对比展示了布料NDF对BRDF的显著影响. 使用标准DFG项会导致大量不正确的结果. 
+
+![图[clothDFGReference]: DFG LUT(左), Ashikhmin DFG LUT(中), "Charlie"DFG LUT(右)的比较](images/ibl/dfg_cloth.png)
+
+手动拟合是在Mathematica中进行的(如图[clothManualFitting]所示), 虽然并不完美, 但解析近似在正确性和运行时成本之间取得了很好的平衡. 
+
+![图[clothManualFitting]: 手工拟合布料NDF的DFG项](images/ibl/cloth_dfg_approximation.png)
+
+清单[clothApprox]展示了Ashikhmin NDF的DFG近似的实现. 我们还提供了[Mathematica笔记本代码](math/Cloth%20DFG%20Approximation.nb), 其中包含了我们的近似公式以及与参考LUT的比较. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec2 PrefilteredDFG_Cloth_Ashikhmin(float roughness, float NoV) {
+    const vec4 c0 = vec4(0.24,  0.93, 0.01, 0.20);
+    const vec4 c1 = vec4(2.00, -1.30, 0.40, 0.03);
+
+    float s = 1.0 - NoV;
+    float e = s - c0.y;
+    float g = c0.x * exp2(-(e * e) / (2.0 * c0.z)) + s * c0.w;
+    float n = roughness * c1.x + c1.y;
+    float r = max(1.0 - n * n, c1.z) * g;
+
+    return vec2(r, r * c1.w);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [clothApprox]: Ashikhmin布料NDF的DFG近似的GLSL实现]
+
+清单[clothCharlieApprox]展示了"Charlie" NDF的DFG近似的实现. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec2 PrefilteredDFG_Cloth_Charlie(float roughness, float NoV) {
+    const vec3 c0 = vec3(0.95, 1250.0, 0.0095);
+    const vec4 c1 = vec4(0.04, 0.2, 0.3, 0.2);
+
+    float a = 1.0 - NoV;
+    float b = 1.0 - roughness;
+
+    float n = pow(c1.x + a, 64.0);
+    float e = b - c0.x;
+    float g = exp2(-(e * e) * c0.y);
+    float f = b + c1.y;
+    float a2 = a * a;
+    float a3 = a2 * a;
+    float c = n * g + c1.z * (a + c1.w) * roughness + f * f * a3 * a3 * a2;
+    float r = min(c, 18.0);
+
+    return vec2(r, r * c0.z);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [clothCharlieApprox]: "Charlie"布料NDF的DFG近似的GLSL实现]
+
+基于图像的光照的实现的其余部分与常规光照的实现步骤相同, 包括可选的次表面散射项及其包裹漫反射分量. 正如透明涂层IBL实现一样, 我们不能在半球上进行积分, 使用视线方向作为主要光照方向来计算包裹漫反射分量. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float diffuse = Fd_Lambert() * ambientOcclusion;
+#if defined(SHADING_MODEL_CLOTH)
+#if defined(MATERIAL_HAS_SUBSURFACE_COLOR)
+diffuse *= saturate((NoV + 0.5) / 2.25);
+#endif
+#endif
+
+vec3 indirectDiffuse = irradianceIBL(n) * diffuse;
+#if defined(SHADING_MODEL_CLOTH) && defined(MATERIAL_HAS_SUBSURFACE_COLOR)
+indirectDiffuse *= saturate(subsurfaceColor + NoV);
+#endif
+
+vec3 ibl = diffuseColor * indirectDiffuse + indirectSpecular * specularColor;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [clothApprox]: 布料NDF的DFG近似的GLSL实现]
+
+需要注意的是, 这只解决了部分IBL问题. 前面描述了预过滤镜面反射环境贴图与标准着色模型的BRDF卷积, 后者与布料BRDF不同. 为获得准确的结果, 理论上我们应该在渲染引擎中为每个BRDF提供一组IBL. 然而, 提供第二组IBL对于我们的使用情景来说是不实际的, 因此我们决定依赖现有的IBL. 
+
+## 静态光照
+
+[TODO]球谐函数或球高斯光照贴图, 辐照度体积, PRT? ...
+
+## 透明度和半透明光照
+
+透明和半透明材料对于增加场景的真实感和正确性非常重要. 因此, Filament必须为这两类材质提供光照模型, 使得美工可以正确地重建真实场景. 半透明度也可以有效地用于许多非真实感设置中. 
+
+### 透明度
+
+要正确地对透明表面进行光照, 我们首先必须了解如何应用材质的不透明度. 观察一个窗口, 你会发现漫反射是透明的. 另一方面, 镜面反射越亮, 窗口呈现的不透明度越低. 这种效果可以在图[cameraTransparency]中看到: 场景正确地反射到玻璃表面上, 但太阳的镜面高光足够亮, 以至于看起来不透明. 
+
+![图[cameraTransparency]: 复杂物体的示例, 其中被照亮表面的透明度起着重要作用](images/screenshot_camera_transparency.jpg)
+
+![图[litCar]: 复杂物体的示例, 其中被照亮表面的透明度起着重要作用](images/screenshot_car.jpg)
+
+为正确地实现不透明度, 我们将使用预乘的alpha格式. 给定所需的不透明度 $\alpha_{opacity}$, 漫反射颜色 $\sigma$ (线性, 未预乘), 我们可以计算面片的有效不透明度. 
+
+$$\begin{align*}
+color &= \sigma * \alpha_{opacity} \\
+opacity &= \alpha_{opacity}
+\end{align*}$$
+
+物理解释是, 来源颜色的RGB分量定义像素发射多少光, 而alpha分量定义像素背后有多少光被遮挡. 因此, 我们必须使用以下混合函数: 
+
+$$\begin{align*}
+Blend_{src} &= 1 \\
+Blend_{dst} &= 1 - src_{\alpha}
+\end{align*}$$
+
+这些方程的GLSL实现在清单[surfaceTransparency]中给出. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// baseColor已经预先乘过
+vec4 shadeSurface(vec4 baseColor) {
+    float alpha = baseColor.a;
+
+    vec3 diffuseColor = evaluateDiffuseLighting();
+    vec3 specularColor = evaluateSpecularLighting();    
+
+    return vec4(diffuseColor + specularColor, alpha);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [surfaceTransparency]: 被照亮表面透明度的GLSL实现]
+
+### 半透明
+
+半透明材质可分为两类:
+- 表面半透明
+- 体积半透明
+
+体积半透明对于粒子系统的光照非常有用, 例如云或烟雾. 表面半透明可用于模拟具有透射散射的材料, 如蜡, 大理石, 皮肤等. 
+
+[TODO]表面半透明度(BRDF+BTDF, BSSRDF)
+
+![图[translucency]: 前光半透明物体(左)和背光半透明物体(右), 使用近似的BTDF和BSSRDF. 模特: 斯坦福大学计算机图形实验室的Lucy](images/screenshot_translucency.png)
+
+## 遮蔽
+
+遮蔽是一个重要的暗化因素, 用于在各种尺度下重建阴影: 
+
+小尺度: 微遮蔽, 用于处理折痕, 裂缝和空洞
+
+中等尺度: 宏遮蔽, 用于处理物体自身几何遮蔽或法线贴图(砖块等)中烘焙几何体的遮蔽. 
+
+大尺度: 遮蔽来自物体之间的接触, 或来自物体自身的几何. 
+
+我们目前忽略了微遮蔽, 工具和引擎通常以"孔洞贴图"的形式提供它. Sébastien Lagarde在[#Lagarde14]中提供了关于如何在Frostbite引擎中处理微遮蔽的有趣讨论: 在漫反射贴图中预先烘焙漫反射微遮蔽, 并在反射纹理中预先烘焙镜面微遮蔽. 
+在我们的系统中, 微遮蔽可以简单地在基色图中烘焙. 这必须在知道镜面光不受微遮蔽的影响情况下才可以. 
+
+中等尺度的环境遮蔽在环境遮蔽贴图中预烘焙, 并作为材质参数提供, 如前面的材质参数化部分所示. 
+
+大尺度的环境光遮蔽通常使用屏幕空间技术来计算, 例如*SSAO*(屏幕空间环境光遮蔽), *HBAO*(基于地平线的环境光遮蔽)等. 请注意, 当相机足够接近表面时, 这些技术也可用于中等尺度的环境遮蔽. 
+
+**注意**: 为了防止在使用中等和大尺度遮蔽时过度变暗, Lagarde建议使用 $min({AO}_{medium}, {AO}_{large})$. 
+
+### 漫反射遮蔽
+
+在[#McGuire10]中, Morgan McGuire在基于物理的渲染的情境下对环境遮蔽进行了形式化. 在他的表述中, McGuire定义了一个环境光照函数 $L_a$, 在我们的例子中, 这个函数是用球谐函数编码的. 他还定义了一个可见度函数 $V$ , 如果在 $l$ 方向上有一条来自表面的视线未被遮蔽, 则 $V(l)=1$, 否则为0. 
+
+利用这两个函数, 渲染方程的环境项可以表示为方程 $\ref{diffuseAO}$. 
+
+$$\begin{equation}\label{diffuseAO}
+L(l,v) = \int_{\Omega} f(l,v) L_a(l) V(l) \left< \NoL \right> dl
+\end{equation}$$
+
+可以通过将可见度项与光照函数分开来近似此表达式, 如方程 $\ref{diffuseAOApprox}$ 所示. 
+
+$$\begin{equation}\label{diffuseAOApprox}
+L(l,v) \approx \left( \pi \int_{\Omega} f(l,v) L_a(l) dl \right) \left( \frac{1}{\pi} \int_{\Omega} V(l) \left< \NoL \right> dl \right)
+\end{equation}$$
+
+只有当远程光 $L_a$ 不变且 $f$ 为Lambertian项时, 这种近似才是精确的. 然而, McGuire指出, 如果两个函数在球体的大部分上相对平滑, 则这种近似是合理的. 这恰好是平行光探头(IBL)的情况. 
+
+此近似的左侧项是IBL预计算的漫反射分量. 右侧项是介于0和1之间的标量因子, 表示一个点的可及性比例. 其相反数就是漫反射的环境遮蔽项, 如方程 $\ref{diffuseAOTerm}$ 所示. 
+
+$$\begin{equation}\label{diffuseAOTerm}
+{AO} = 1 - \frac{1}{\pi} \int_{\Omega} V(l) \left< \NoL \right> dl
+\end{equation}$$
+
+由于我们使用预先计算的漫反射项, 因此我们无法在运行时计算着色点的精确可及性. 为了弥补我们的预计算项中缺少的信息, 我们通过在着色点应用特定于表面材质的环境遮蔽因子来部分重建入射光. 
+
+在实践中, 烘焙的环境遮蔽作为灰度纹理存储, 其分辨率常常比其他纹理(例如基色或法线)更低. 值得注意的是, 我们的材质模型的环境遮蔽性质旨在重建宏观水平的漫反射环境遮蔽. 虽然这种近似在物理上是不正确的, 但它在质量与性能之间达到了可接受的折衷. 
+
+图[aoComparison]展示了两种不同的材质, 没有使用和使用漫反射环境遮蔽的情形. 请注意材质环境遮蔽是如何用于重建不同贴片之间的自然阴影的. 没有环境遮蔽, 两种材料看起来都太平了. 
+
+![图[aoComparison]: 不使用(左)和使用漫反射环境遮蔽(右)的材质之间的比较](images/screenshot_ao.jpg)
+
+在GLSL着色器中使用烘焙的漫反射环境遮蔽很简单, 如清单[bakedDiffuseAO]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// 间接漫反射
+vec3 indirectDiffuse = max(irradianceSH(n), 0.0) * Fd_Lambert();
+// 环境遮蔽
+indirectDiffuse *= texture2D(aoMap, outUV).r;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [bakedDiffuseAO]: 烘焙的漫反射环境遮蔽的GLSL实现]
+
+请注意环境遮蔽项仅适用于间接光照. 
+
+### 镜面遮蔽
+
+镜面微遮蔽可以从 $\fNormal$ 导出, 它本身来自漫反射颜色. 推导基于以下知识: 真实世界的材料具有的反射率不会低于2％. 因此, 可以将0-2％范围内的值视为预烘焙的镜面遮蔽, 用于平滑地消除Fresnel项. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float f90 = clamp(dot(f0, 50.0 * 0.33), 0.0, 1.0);
+// 便宜的亮度近似
+float f90 = clamp(50.0 * f0.g, 0.0, 1.0);
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [specularMicroOcclusion]: 预烘焙镜面遮蔽的GLSL实现]
+
+前面提到的环境遮蔽的推导假定为Lambertian表面, 并且只适用于间接漫反射光照. 缺乏表面可及性信息对间接镜面光照的重建特别有害. 它通常表现为光线泄漏. 
+
+Sébastien Lagarde在[#Lagarde14]中提出了一种经验方法, 可以从漫反射遮蔽项推导出镜面遮蔽项. 方法没有任何物理基础, 但得到的结果在视觉上令人满意. 他的公式的目标是返回粗糙表面的未修改的漫反射遮蔽项. 对于光滑表面, 清单[specularOcclusion]中实现的公式减少了垂直入射时遮蔽的影响, 并增加了掠射角处的遮蔽影响. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float computeSpecularAO(float NoV, float ao, float roughness) {
+    return clamp(pow(NoV + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
+}
+
+// 间接镜面
+vec3 indirectSpecular = evaluateSpecularIBL(r, roughness);
+// 环境光遮蔽
+float ao = texture2D(aoMap, outUV).r;
+indirectSpecular *= computeSpecularAO(NoV, ao, roughness);
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [specularOcclusion]: Lagarde镜面遮蔽因子的GLSL实现]
+
+请注意镜面遮蔽因子只用于间接光照. 
+
+#### 水平镜面遮蔽
+
+当计算使用法线贴图的表面的镜面IBL贡献时, 可能最终得到一个指向表面的反射矢量. 如果此反射矢量直接用于着色, 则表面上不应照亮的位置会被照亮(假设表面不透明). 这是另一种光泄漏现象, 可以使用Jeff Russell给出的简单技术轻松地将其影响最小化[#Russell15]. 
+
+关键的思想是遮蔽来自表面后面的光. 这很容易实现, 因为反射矢量和表面法线之间的负点积表示指向表面的反射矢量. 清单[horizonOcclusion]中展示的实现类似于Russell的, 虽然没有使用美工可以控制的地平线衰减因子. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// 间接镜面
+vec3 indirectSpecular = evaluateSpecularIBL(r, roughness);
+
+// 带衰减的水平遮蔽, 直接镜面也应该计算
+float horizon = min(1.0 + dot(r, n), 1.0);
+indirectSpecular *= horizon * horizon;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [horizonOcclusion]:  水平高光遮蔽的GLSL实现]
+
+水平镜面遮蔽衰减很便宜, 但很容易根据需要省略它以提高性能. 
+
+## 法线贴图
+
+法线贴图有两种常见的使用情形: 用低多边形网格替换高多边形网格(使用基础贴图), 添加表面细节(使用细节贴图). 
+
+想象一下, 我们想要渲染簇绒皮革覆盖的家具的一部分. 对几何体进行建模以准确地表示簇绒图案会需要太多三角形, 因此我们将高多边形网格烘焙到法线贴图中. 一旦将基本贴图应用于简化的网格(在本例中为四边形)后, 我们就得到图[normalMapped]中的结果. 用于创建此效果的基本贴图如图[baseNormalMap]所示. 
+
+![图[normalMapped]: 不使用(左)和使用法线贴图(右)的低多边形网格](images/screenshot_normal_mapping.jpg)
+
+![图[baseNormalMap]: 用作基本贴图的法线贴图](images/screenshot_normal_map.jpg)
+
+如果我们现在想要将这个基本贴图与第二个法线贴图结合起来, 就会出现一个简单的问题. 例如, 让我们使用图[detailNormalMap]中显示的细节贴图来为皮革添加裂缝. 
+
+![图[detailNormalMap]: 用作细节贴图的法线贴图](images/screenshot_normal_map_detail.jpg)
+
+鉴于法线贴图的性质(XYZ分量存储在切线空间中), 很显然, 诸如线性或叠加混合等简单方法无法使用. 我们将使用两种更先进的技术: 一种是数学上正确的技术, 另一种是适用于实时着色的近似技术. 
+
+### 重定向法线贴图
+
+Colin Barré-Brisebois和Stephen Hill在[#Hill12]中提出了一种数学上合理的解决方法, 称为*重定向法线贴图*, 它包括将细节图的基旋转到基本贴图的法线上. 这种技术使用最短弧四元数来施加旋转, 借助切线空间的性质, 可大大简化了旋转. 
+
+按照[#Hill12]中给出的简化, 我们可以给出清单[reorientedNormalMapping]中所示的GLSL实现. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 t = texture(baseMap,   uv).xyz * vec3( 2.0,  2.0, 2.0) + vec3(-1.0, -1.0,  0.0);
+vec3 u = texture(detailMap, uv).xyz * vec3(-2.0, -2.0, 2.0) + vec3( 1.0,  1.0, -1.0);
+vec3 r = normalize(t * dot(t, u) - u * t.z);
+return r;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [reorientedNormalMapping]: 重定向法线贴图的GLSL实现]
+
+请注意, 此实现假定法线存储时未压缩, 并且在源纹理中处于[0..1]范围内. 
+
+归一化步骤并不是严格必需的, 如果在运行时使用该技术, 可以忽略. 如果这样, `r`的计算变为`t * dot(t, u) / t.z - u`. 
+
+由于这种技术比下面描述的技术略贵一些, 我们将主要离线使用它. 因此, 我们提供了一个简单的离线工具来组合两个法线贴图. 图[blendedNormalMaps]展示了该工具的输出, 使用的是前面给出的基本贴图和细节贴图. 
+
+![图[blendedNormalMaps]: 混合法线贴图和细节贴图(左)以及与漫反射贴图结合后生成的渲染图(右图)](images/screenshot_normal_map_blended.jpg)
+
+### UDN混合
+
+[#Hill12]中描述技术称为UDN混合, 它是偏导数混合技术的一种变体. 它的主要优点是需要的着色器指令数量较少(参见清单[udnBlending]). 虽然它可以减少平面区域的细节, 但如果运行时必须要进行混合, 那UDN混合很有意义. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 t = texture(baseMap,   uv).xyz * 2.0 - 1.0;
+vec3 u = texture(detailMap, uv).xyz * 2.0 - 1.0;
+vec3 r = normalize(t.xy + u.xy, t.z);
+return r;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [udnBlending]: UDN混合的GLSL实现]
+
+得到的结果在视觉上接近重定向法线贴图, 但对数据进行的仔细比较表明UDN确实不太正确. 图[blendedNormalMapsUDN]展示了UDN混合方法的结果, 使用的是与前面示例中相同的源数据. 
+
+![图[blendedNormalMapsUDN]: 使用UDN混合技术混合法线和细节贴图](images/screenshot_normal_map_blended_udn.jpg)
+
+# 体积效应
+
+## 指数高度雾
+
+![图 [exponentialHeightFog1]: 指数高度雾的方向散射示例](images/screenshot_fog1.jpg)
+
+![图 [exponentialHeightFog2]: 指数高度雾的方向散射示例](images/screenshot_fog2.jpg)
+
+# 抗锯齿
+
+[TODO] MSAA, 几何AA(法线和粗糙度), 着色器抗锯齿(物体空间着色? )
+
+# 成像管道
+
+本文档的光照部分描述了光线如何以物理的方式与场景中的表面相互作用. 为获得合理的结果, 我们必须更进一步, 考虑将根据光照方程计算的场景亮度转换为可显示的像素值时所需要的变换. 
+
+我们将要使用的一系列转换形成以下成像管道: 
+
+
+![图 [ch]: ](JOB-2.png)
+
+
+*************************************************************************************
+* .-------------.      .--------------.      .---------------.                      *
+* |    场景     |      |    归一化    |      |               |                      *
+* |    亮度     +----->|    亮  度    +----->|     白平衡    |                      *
+* |             |      |    (HDR)     |      |               |                      *
+* '-------------'      '--------------'      '-------+-------'                      *
+*                                                    |                              *
+*                                                    v                              *
+*                                            .---------------.                      *
+*                                            |               |                      *
+*                                            |    颜色分级   |                      *
+*                                            |               |                      *
+*                                            '-------+-------'                      *
+*                                                    |                              *
+*                                                    v                              *
+*                                            .---------------.                      *
+*                                            |               |                      *
+*                                            |    色调映射   |                      *
+*                                            |               |                      *
+*                                            '-------+-------'                      *
+*                                                    |                              *
+*                                                    v                              *
+*                                            .---------------.      .-------------. *
+*                                            |               |      |             | *
+*                                            |     OETF      +----->|    像素值   | *
+*                                            |               |      |    (LDR)    | *
+*                                            '---------------'      '-------------' *
+*************************************************************************************
+
+**注意**: *OETF*步骤是应用目标色彩空间的光电传递函数. 为清楚起见, 此图不包括后处理步骤, 如晕影, 泛光等. 这些影响将分开讨论. 
+
+[TODO]色彩空间(ACES, sRGB, Rec. 709, Rec. 2020等), 伽马/线性等
+
+## 基于物理的相机
+
+图像转换过程的第一步是使用基于物理的相机来正确显示场景的输出亮度. 
+
+### 曝光设置
+
+因为我们在整个光照管道都中使用光度单位, 所以到达相机的光线是以亮度 $L$ 表示的能量, 单位为 $cd.m^{-2}$. 入射到相机传感器的光覆盖的范围很大, 从星光的 $10^{-5}cd.m^{-2}$ 到太阳的 $10^{9}cd.m^{-2}$. 由于我们显然无法操纵甚至不能记录如此大范围的值, 我们需要重新映射它们. 
+
+这个范围重映射是在相机中通过在一定时间内曝光传感器来完成的. 为了最大限度地利用传感器的有限范围, 场景的灯光范围以"中间灰"为中心, "中间灰"是黑色和白色之间的中间值. 因此, 曝光通过手动或自动操作3个设置来实现: 
+
+- 光圈
+- 快门
+- 灵敏度(也称增益)
+
+光圈: $N$, 单位f-stops ƒ, 此设置控制相机系统光圈的打开或关闭程度. 由于光圈值表示镜头焦距与入射光瞳直径之比, 因此高值(ƒ/16)表示小光圈, 小值(ƒ/1.4)表示宽光圈. 除了曝光之外, 光圈设置还可以控制景深. 
+
+快门: $t$, 单位为秒 $s$, 即曝光时间, 此设置控制光圈保持打开的时间长度(它还控制传感器快门的时间, 无论是电子快门还是机械快门). 除了曝光之外, 快门还可以控制运动模糊. 
+
+灵敏度: $S$, 以ISO表示, 此设置控制如何量化到达传感器的光. 由于其单位, 此设置通常简称为"ISO"或"ISO设置". 除了曝光之外, 灵敏度还可以控制噪音量. 
+
+### 曝光值
+
+由于在我们的方程中引用这三个设置很笨拙, 因此我们用曝光值来概括"曝光三角形", 记为EV[^互易性]. 
+
+EV以基数为2的对数标度表示, 差异为1 EV称为1 stop. 一个正值stop(+ 1EV)对应的亮度因子为2, 而一个负值stop(-1 EV)对应的亮度因子为1/2. 
+
+方程 $\ref{ev}$ 给出了 [EV的正式定义](https://en.wikipedia.org/wiki/Exposure_value). 
+
+$$\begin{equation}\label{ev}
+EV = \log_2(\frac{N^2}{t})
+\end{equation}$$
+
+请注意, 此定义只是光圈和快门的函数, 而与灵敏度无关. 曝光值按惯例以ISO 100或 $EV_{100}$ 进行定义, 因为我们希望使用此惯例, 所以我们需要能够将 $EV_{100}$ 表示为灵敏度的函数. 
+
+由于我们知道EV是基数为2的对数标度, 其中每一stop会将亮度增加为原来的2倍或减少为原来的一半, 我们可以正式定义 $EV_{S}$, 即给定灵敏度下的曝光值(方程 $\ref{evS}$). 
+
+$$\begin{equation}\label{evS}
+{EV}_S = EV_{100} + \log_2(\frac{S}{100})
+\end{equation}$$
+
+根据3个相机设置计算 $EV_{100}$ 非常简单, 如 $\ref{ev100}$ 所示. 
+
+$$\begin{equation}\label{ev100}
+{EV}_{100} = EV_{S} - \log_2(\frac{S}{100}) = \log_2(\frac{N^2}{t}) - \log_2(\frac{S}{100})
+\end{equation}$$
+
+请注意, 操作员(摄影师等)可以通过光圈, 快门和灵敏度的多种组合实现相同的曝光(因此EV也相同). 这样可以在过程中进行一些艺术控制(景深, 运动模糊, 纹理). 
+
+[^互易性]: 我们假定一个数字传感器, 这意味着我们不需要考虑互易性故障
+
+#### 曝光值和亮度
+
+类似于光点测量仪, 相机能够测量场景的平均亮度, 并将其转换为EV以实现自动曝光, 或者至少为用户提供曝光指导. 
+
+如果给定每一设备的校准常数 $K$, 可以将EV定义为场景亮度 $L$ 的函数(方程 $\ref{evK}$). 
+
+$$\begin{equation}\label{evK}
+EV = \log_2(\frac{L \times S}{K})
+\end{equation}$$
+
+这个常数 $K$ 为反射光测量仪的常数, 不同的制造商使用的数值不同. 我们可以找到这个常数的两个常见值: 佳能, 尼康和Sekonic使用12.5, Pentax和Minolta使用14. 鉴于佳能和尼康相机应用广泛, 以及我们自己使用Sekonic测光仪器, 我们选择使用 $K = 12.5$. 
+
+由于我们想要使用 $EV_{100}$, 所以我们可以将 $K$ 和 $S$ 代入方程 $\ref{evK}$, 得到方程 $\ref{ev100L}$. 
+
+$$\begin{equation}\label{ev100L}
+EV = \log_2(L \frac{100}{12.5})
+\end{equation}$$
+
+考虑到这种关系, 通过首先测量帧的平均亮度, 就可以在我们的引擎中实现自动曝光. 实现此目的的一种简单方法是, 简单地将亮度缓冲区采样降至1个像素并读取剩余值. 遗憾的是, 这种技术很不稳定, 并且很容易受极端值的影响. 许多游戏使用了不同的方法, 其中包括使用亮度直方图来移除极值. 
+
+出于验证和测试的目的, 可以从给定的EV计算亮度: 
+
+$$\begin{equation}
+L = 2^{EV_{100}} \times \frac{12.5}{100} = 2^{EV_{100} - 3}
+\end{equation}$$
+
+#### 曝光值和照度
+
+给定每个设备的校准常数 $C$, 可以将EV定义为照度 $E$ 的函数: 
+
+$$\begin{equation}\label{evC}
+EV = \og_2(\frac{E \times S}{C})
+\end{equation}$$
+
+常数 $C$ 为入射光测量仪常数, 不同制造商和/或不同类型的传感器使用的值不同. 传感器有两种常见类型: 平面传感器和半球传感器. 对平面传感器, 常见值为250. 对半球传感器, 我们可以找到两个常见值: Minolta使用的320, Sekonic使用的340. 
+
+由于我们希望使用 $EV_{100}$, 所以我们可以将 $S$ 代入$\ref{evC}$, 得到方程 $\ref{ev100C}$. 
+
+$$\begin{equation}\label{ev100C}
+EV = \log_2(E \frac{100}{C})
+\end{equation}$$
+
+然后可以从给定的EV计算照度. 对具有 $C = 250$ 的平面传感器, 我们得到方程 $\ref{eFlatSensor}$. 
+
+$$\begin{equation}\label{eFlatSensor}
+E = 2^{EV_{100}} \times 2.5
+\end{equation}$$
+
+对具有 $C = 340$ 的半球传感器, 我们得到方程 $\ref{eHemisphereSensor}$
+
+$$\begin{equation}\label{eHemisphereSensor}
+E = 2^{EV_{100}} \times 3.4
+\end{equation}$$
+
+#### 曝光补偿
+
+即使曝光值实际上表示了相机设置的组合, 但摄影师经常使用它来描述光强度. 这就是为什么相机允许摄影师对曝光过度或曝光不足进行曝光补偿的原因. 这一设置可用于艺术控制, 但也可用于实现适当曝光(例如, 将雪的曝光设置为18％中间灰). 
+
+应用曝光补偿 $EC$ 很简单, 只要为曝光值添加偏移即可, 如方程 $\ref{ec}$ 所示. 
+
+$$\begin{equation}\label{ec}
+EV_{100}' = EV_{100} - EC
+\end{equation}$$
+
+此方程使用负号, 因为我们使用以f-stop为单位的 $EC$ 来调整最终的曝光. 增加EV类似于关闭镜头的光圈(或降低快门或降低感光度). 较高的EV会产生较暗的图像. 
+
+### 曝光
+
+要将场景亮度转换为标准化亮度, 我们必须使用[光度曝光](https://en.wikipedia.org/wiki/Exposure_value#Camera_settings_vs._photometric_exposure)(或发光曝光), 或到达相机传感器的场景亮度量. 光度曝光以 $H$ 表示, 单位为 lux s, 如方程 $\ref{photometricExposure}$ 所示. 
+
+$$\begin{equation}\label{photometricExposure}
+H = \frac{q \cdot t}{N^2} L
+\end{equation}$$
+
+其中 $L$ 为场景的亮度, $t$ 为快门, $N$ 为光圈,  $q$ 为镜头和渐晕衰减(通常 $q = 0.65$ [^lensAttenuation]). 此定义没有考虑传感器的灵敏度. 为此, 我们必须使用三种方法之一来关联光度曝光和灵敏度: 基于饱和度的速度, 基于噪声的速度和标准输出灵敏度. 
+
+我们选择基于饱和度的速度关系, 它给出了 $H_{sat}$, 这是不会导致裁剪或泛光的相机输出的最大可能曝光 (方程 $\ref{hSat}$). 
+
+$$\begin{equation}\label{hSat}
+H_{sat} = \frac{78}{S_{sat}}
+\end{equation}$$
+
+我们将方程 $\ref{hSat}$ 和 $\ref{photometricExposure}$ 组合到方程 $\ref{lmax}$ 以计算最大亮度 $L_{max}$, 对给定的曝光设置 $S$, $N$ 和 $t$, 它可以使传感器饱和. 
+
+$$\begin{equation}\label{lmax}
+L_{max} = \frac{N^2}{q \cdot t} \frac{78}{S}
+\end{equation}$$
+
+然后可以使用此最大亮度来标准化入射亮度 $L$ , 如方程 $\ref{normalizedLuminance}$ 所示. 
+
+$$\begin{equation}\label{normalizedLuminance}
+L' = L \frac{1}{L_{max}}
+\end{equation}$$
+
+$L_{max}$ 可以使用方程 $ \ref{ev} $, $ S = 100 $ 和 $ q = 0.65 $ 进行简化: 
+
+$$\begin{align*}
+L_{max} &= \frac{N^2}{t} \frac{78}{q \cdot S} \\
+L_{max} &= 2^{EV_{100}} \frac{78}{q \cdot S} \\
+L_{max} &= 2^{EV_{100}} \times 1.2
+\end{align*}$$
+
+清单[fragmentExposure]展示了如何将曝光项直接用于片段着色器中计算的像素颜色. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// 根据曝光设置计算相机的 EV100
+// 光圈单位 f-stops
+// 快门单位 seconds
+// 灵敏度单位 ISO
+float exposureSettings(float aperture, float shutterSpeed, float sensitivity) {
+    return log2((aperture * aperture) / shutterSpeed * 100.0 / sensitivity);
+}
+
+// 根据相机的EV100计算曝光归一化系数
+float exposure(ev100) {
+    return 1.0 / (pow(2.0, ev100) * 1.2);
+}
+
+float ev100 = exposureSettings(aperture, shutterSpeed, sensitivity);
+float exposure = exposure(ev100);
+
+vec4 color = evaluateLighting();
+color.rgb *= exposure;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [fragmentExposure]: 曝光的GLSL实现]
+
+在实践中, 可以在CPU上预先计算曝光系数以节省着色器指令. 
+
+[^lensAttenuation]: 请参阅维基百科的 *Film Speed, Measurements and calculations*(https://en.wikipedia.org/wiki/Film_speed)
+
+### 自动曝光
+
+上述过程依赖于美工人员手动设置相机的曝光设置. 在实践中这可能很麻烦, 因为相机移动和/或动态效果会极大地影响场景的亮度. 由于我们知道如何根据给定的亮度计算曝光值(参见节[曝光值和亮度]), 因此我们可以将相机转换为光点测量仪. 为此, 我们需要测量场景的亮度. 
+
+有两种常用技术可用于测量场景的亮度: 
+
+- **亮度下采样**, 通过对前一帧连续下采样直到获得可在CPU上读取的1x1对数亮度缓冲区(也可以使用计算着色器实现). 得到的结果为场景的平均对数亮度. 第一次下采样必须首先提取每个像素的亮度. 这种技术可能不稳定, 其输出应随着时间的推移而平滑. 
+- **使用亮度直方图**, 查找平均对数亮度. 与前一种技术相比, 该技术具有优势, 因为它可以忽略极值并提供更稳定的结果. 
+
+请注意, 两种方法都会找到乘以反照率后的平均亮度. 这并不完全正确, 但另一种方法是在乘以表面反照率之前保留包含每个像素亮度的亮度缓冲区. 这在计算和内存方面都很昂贵. 
+
+这两种技术还会将测量系统限制为平均测量, 其中每个像素对最终曝光具有相同的影响(或权重). 相机通常提供3种测光模式: 
+
+光斑测量: 只有图像中心的一个小圆圈对最终曝光有贡献. 该圆圈的大小通常为总图像尺寸的1％至5％. 
+
+中心加权测量: 位于屏幕中央的场景亮度值对曝光有更大的影响. 
+
+多区域或矩阵计量: 每个制造商的计量模式不同. 此模式的目标是优先考虑场景中最重要部分的曝光. 这通常通过将图像划分成网格并对每个单元(使用焦点信息, 最小/最大亮度等)进行分类来实现. 高级实现尝试将场景与已知数据集进行比较, 以实现适当的曝光(背光日落, 多云的雪天等). 
+
+#### 光斑测量
+
+计算场景亮度时, 每个亮度值的权重 $w$ 由方程 $\ref{spotMetering}$ 给出. 
+
+$$\begin{equation}\label{spotMetering}
+w(x,y) = \begin{cases} 1 & \left| p_{x,y} - s_{x,y} \right| \le s_r \\ 0 & \left| p_{x,y} - s_{x,y} \right| \gt s_r \end{cases}
+\end{equation}$$
+
+其中 $p$ 为像素的位置,  $s$ 为光斑的中心, $s_r$ 为光斑的半径. 
+
+#### 中心加权测量
+
+$$\begin{equation}\label{centerMetering}
+w(x,y) = smooth(\left| p_{x,y} - c \right| \times \frac{2}{width} )
+\end{equation}$$
+
+其中 $c$ 为时间的中心, $smooth()$ 是一个平滑函数, 如GLSL的`smoothstep()`. 
+
+#### 适应
+
+为了平滑测量的结果, 我们可以使用方程 $\ref{adaptation}$, 这是Pattanaik等人在[Pattanaik00]中给出的的指数反馈循环. 
+
+$$\begin{equation}\label{adaptation}
+L_{avg} = L_{avg} + (L - L_{avg}) \times (1 - e^{-\Delta t \cdot \tau})
+\end{equation}$$
+
+其中 $\Delta t$ 为相对于前一帧的时间增量, $\tau$ 为用于控制适应率的常数. 
+
+### 泛光
+
+由于EV标度几乎是感知线性的, 因此曝光值也经常用作光照单位. 这意味着我们可以让美工使用曝光补偿作为一个单位来指定灯光或发射表面的强度. 因此, 发射光的强度是相对于曝光设置的. 应尽可能避免使用曝光补偿作为灯光单位, 但可以有效地强制(或取消)发光表面周围的泛光效果, 而不受相机设置的影响(例如, 游戏中的光剑应始终具有泛光效果). 
+
+![图[bloom]: 传感器上的饱和光点在场景的明亮部分产生泛光效果](images/screenshot_bloom.jpg)
+
+设 $c$ 为泛光颜色, $EV_{100}$ 为当前曝光值, 我们可以很容易地计算泛光值的亮度, 如方程 $\ref{bloomEV}$ 所示. 
+
+$$\begin{equation}\label{bloomEV}
+EV_{bloom} = EV_{100} + EC \\
+L_{bloom} = c \times 2^{EV_{bloom} - 3}
+\end{equation}$$
+
+方程 $\ref{bloomEV}$ 可用于在片段着色器中实现自发光泛光, 如清单[fragmentEmissive]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec4 surfaceShading() {
+    vec4 color = evaluateLights();
+    // rgb为颜色, w为曝光补偿
+    vec4 emissive = getEmissive();
+    color.rgb += emissive.rgb * pow(2.0, ev100 + emissive.w - 3.0);
+    color.rgb *= exposure;
+    return color;
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [fragmentEmissive]: 自发光泛光的GLSL实现]
+
+## 光学后处理
+
+### 彩色边纹
+
+[TODO]
+
+![图[fringing]: 彩色边纹的例子: 观察左边的耳朵或底部的下巴. ](images/screenshot_fringing.jpg)
+
+### 镜头光晕
+
+[TODO] 注意: 有一种基于物理的方法来生成镜头光晕, 方法是对穿过镜头光学组的光线进行追踪, 但我们将使用基于图像的方法. 这种方法成本更低, 并且具有一些优点, 如支持自由发射体遮蔽和无限光源. 
+
+## 影片后处理
+
+[TODO] 尽可能对场景参考数据(线性空间, 色调映射前)进行后处理
+
+很重要的一点是, 要提供色彩校正工具, 使美工对最终图像有更好的艺术控制. 这些工具可在每个照片或视频处理应用程序中找到, 例如Adobe Photoshop或Adobe After Effects. 
+
+### 对比度
+
+### 曲线
+
+### 级别
+
+### 颜色分级
+
+## 光路
+
+引擎使用的光路或渲染方法可能会严重影响性能, 并且可能大大限制场景中可使用的灯光数目. 传统上, 3D引擎使用两种不同的渲染方法: 正向渲染和延迟渲染. 
+
+我们的目标是使用符合以下约束的渲染方法: 
+
+- 低带宽要求
+- 每个像素多个动态灯光
+
+此外, 我们还希望能够轻松支持: 
+
+- MSAA
+- 透明
+- 多材质模型
+
+许多现代3D渲染引擎使用延迟渲染, 可以轻松支持数十, 数百甚至数千种灯光(以及其他优点). 遗憾的是, 这种方法在带宽方面非常昂贵. 使用我们的默认PBR材质模型, G缓冲区每像素使用160到192位, 这将直接导致相当高的带宽要求. 
+
+另一方面, 正向渲染方法向来不擅长处理多个灯光. 常见的实现方法是多次渲染场景, 每次渲染一个可见光源, 然后再混合(累加)结果. 另一种方法是为场景中的每个物体指定固定的最大灯光数. 然而, 当物体占据世界中的大量空间时(建筑物, 道路等), 这是不切实际的. 
+
+分块着色可用于前向渲染和延迟渲染方法. 思想是将屏幕划分成一个图块网格, 对每个图块, 查找可以影响其内部像素的灯光的列表. 这种做法具有减少过度绘制(在延迟渲染中)和大型物体着色计算(在前向渲染中)的优点. 然而, 这种技术存在深度不连续性的问题, 可能导致大量无关的工作. 
+
+图[sponza]中显示的场景是使用聚类前向渲染方法得到的. 
+
+![图[sponza]: 带有数十个动态灯光和MSAA的聚类前向渲染](images/screenshot_sponza.jpg)
+
+图[sponzaTiles]展示了相同场景的分块(在本例中, 渲染目标为1280x720. 图块为80x80px). 
+
+![图[sponzaTiles]: 分块着色(16x9图块)](images/screenshot_sponza_tiles.jpg)
+
+### 聚类前向渲染
+
+我们决定探索另一种被称为聚类着色的方法, 使用它的前向变体形式. 聚类着色扩展了分块渲染的想法, 但在第3个轴上添加了分段. "聚类"是在视图空间中完成的, 方法是将视锥划分为三维网格. 
+
+首先在深度轴上对视锥进行切片, 如图[sponzaSlices]所示. 
+
+![图[sponzaSlices]: 深度切片(16片)](images/screenshot_sponza_slices.jpg)
+
+然后将深度切片与屏幕图块组合起来, 对视锥进行"体素化"(Voxelize). 我们将每个簇称为锥素, 因为它清楚地表明了它们代表的是什么(视锥空间中的体素). "锥素化"通道的结果如图[froxel1]和图[froxel2]所示. 
+
+![图[froxel1]: 视锥体素化(5x3图块, 8个深度切片)](images/screenshot_sponza_froxels1.jpg)
+
+![图[froxel2]: 视锥体素化(5x3图块, 8个深度切片)](images/screenshot_sponza_froxels2.jpg)
+
+在渲染帧之前, 会将场景中的每个灯光指定给与其相交的所有锥素. 灯光指定通道的结果是每个锥素的灯光列表. 在渲染通道中, 我们可以计算片段所属的锥素的ID, 从而得到影响该片段的灯光列表. 
+
+深度切片不是线性的, 而是指数的. 在典型的场景中, 靠近近平面的像素多于远平面的. 因此, 锥素的指数网格可以改善最重要的灯光的分配. 
+
+图[froxelDistribution]展示了使用指数切片时, 每个深度切片的世界空间单位的数目. 
+
+![图[froxelDistribution]: 近: 0.1米, 远: 100米, 16片](images/diagram_froxels1.png)
+
+遗憾的是, 简单的指数体素化是不够的. 上图清楚地说明了世界空间如何沿切片分布, 但它无法显示靠近近平面的情况. 如果我们在较小的范围(0.1 m到7 m)内检查相同的分布, 我们可以看到一个有趣的问题, 如图[froxelDistributionClose]所示. 
+
+![图[froxelDistributionClose]: 0.1-7m范围内的深度分布](images/diagram_froxels2.png)
+
+此图显示, 简单的指数分布使用了切片的一半, 这些切片与相机非常接近. 在这个特殊的例子中, 我们使用了前5米的16个切片中的8个. 由于动态世界灯光是点光源(球体)或聚光灯(锥体), 因此靠近近平面的分辨率完全不需要如此精细. 
+
+我们的解决方案是根据场景, 近平面和远平面手动调整第一个锥素的大小. 通过这样做, 我们可以更好地将剩余锥素分布在整个视锥内. 图[froxelDistributionExp]展示了如果我们使用0.1 m到5 m之间的特殊锥素时会发生什么情况. 
+
+![图[froxelDistributionExp]: 近: 0.1, 远: 100米, 16片, 特殊锥素: 0.1-5米](images/diagram_froxels3.png)
+
+这种新的分布更加高效, 并且可以在整个视锥中更好地分配灯光. 
+
+### 实现说明
+
+灯光指定可以通过两种不同的方式完成, 一种是在GPU上, 另一种是在CPU上. 
+
+#### GPU灯光指定
+
+这种实现需要OpenGL ES 3.1以及对计算着色器的支持. 灯光存储在着色器存储缓冲区对象(SSBO)中, 并传递给计算着色器, 着色器将每个灯光指定给相应的锥素. 
+
+视锥体素化只能由第一个计算着色器执行一次(只要投影矩阵不改变), 并且可以由另一个计算着色器对每帧执行灯光分配. 
+
+计算着色器的线程模型特别适合这种任务. 我们只需调用与锥素同样的工作组(我们可以直接将X, Y和Z工作组计数映射到我们的锥素网格分辨率). 每个工作区将依次进行并遍历要指定的所有灯光. 
+
+相交测试意味着简单的球体/视锥或锥体/视锥测试. 
+
+有关GPU实现的源代码, 请参阅附录(仅限于点光源). 
+
+#### CPU灯光指定
+
+在非OpenGL ES 3.1设备上, 可以在CPU上有效地执行灯光指定. 该算法与GPU实现不同. 引擎会将每个灯光"光栅化"为锥素, 而不是对每个锥素的每个灯光进行迭代. 例如, 给定一个点光源的中心和半径, 计算其之相交的锥素列表是很简单的. 
+
+与GPU变体相比, 这种技术具有额外好处, 可以提供更严格的剔除. CPU实现还可以更轻松地生成一个打包的灯光列表. 
+
+#### 着色
+
+每个锥素的灯光列表可以作为SSBO(OpenGL ES 3.1)或纹理传递给片段着色器. 
+
+#### 从深度到锥素
+
+给定近平面 $n$, 远平面 $f$, 最大深度切片数 $m$ 和[0..1]范围内的线性深度值 $z$, 方程 $\ref{zToCluster}$ 可用于计算给定位置的聚类索引. 
+
+$$\begin{equation}\label{zToCluster}
+zToCluster(z,n,f,m)=floor \left( \max \left( \log_2(z) \frac{m}{-\log_2(\frac{n}{f})} + m, 0 \right) \right)
+\end{equation}$$
+
+然而, 这一公式存在前面提到的分辨率问题. 我们可以通过引入 $sn$ 来解决这个问题, 它是一个特殊的近似值, 用于定义第一个锥素的范围(第一锥素占据范围[n..sn], 其余的体素占据范围[sn..f]). 
+
+$$\begin{equation}\label{zToClusterFix}
+zToCluster(z,n,sn,f,m)=floor \left( \max \left( \log_2(z) \frac{m-1}{-\log_2(\frac{sn}{f})} + m, 0 \right) \right)
+\end{equation}$$
+
+方程 $\ref{linearZ}$ 可用于从`gl_FragCoord.z`计算线性深度值(假定标准OpenGL投影矩阵). 
+
+$$\begin{equation}\label{linearZ}
+linearZ(z)=\frac{n}{f+z(n-f)}
+\end{equation}$$
+
+通过预先计算两个项 $c_0$ 和 $c_1$ 可以简化这个方程, 如方程 $\ref{linearZFix}$ 所示. 
+
+$$\begin{equation}\label{linearZFix}
+c_1 = \frac{f}{n} \\
+c_0 = 1 - c_1 \\
+linearZ(z)=\frac{1}{z \cdot c_0 + c_1}
+\end{equation}$$
+
+这一简化非常重要, 因为我们将线性z值传递给 $\ref{zToClusterFix}$ 中的`log2`. 由于除法在对数下变为取负, 我们可以使用 $-\log_2(z \cdot c_0 + c_1)$ 来避免除法. 
+
+总而言之, 计算给定片段的锥素索引非常容易实现, 如清单[fragCoordToFroxel]所示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#define MAX_LIGHT_COUNT 16 // 每个锥素的最大光源数
+
+uniform uvec4 froxels; // res x, res y, count y, count y
+uniform vec4 zParams;  // c0, c1, index scale, index bias
+
+uint getDepthSlice() {
+    return uint(max(0.0, log2(zParams.x * gl_FragCoord.z + zParams.y) *
+            zParams.z + zParams.w));
+}
+
+uint getFroxelOffset(uint depthSlice) {
+    uvec2 froxelCoord = uvec2(gl_FragCoord.xy) / froxels.xy;
+    froxelCoord.y = (froxels.w - 1u) - froxelCoord.y;
+
+    uint index = froxelCoord.x + froxelCoord.y * froxels.z +
+            depthSlice * froxels.z * froxels.w;
+    return index * MAX_FROXEL_LIGHT_COUNT;
+}
+
+uint slice = getDepthSlice();
+uint offset = getFroxelOffset(slice);
+
+// 计算光照
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [fragCoordToFroxel]: 根据片段的屏幕坐标计算锥素索引的GLSL实现]
+
+为了高效地计算索引, 必须预先计算一些uniforms值. 用于预先计算这些uniforms值的代码见清单[froxelIndexPrecomputation]. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+froxels[0] = TILE_RESOLUTION_IN_PX;
+froxels[1] = TILE_RESOLUTION_IN_PX;
+froxels[2] = numberOfTilesInX;
+froxels[3] = numberOfTilesInY;
+
+zParams[0] = 1.0f - Z_FAR / Z_NEAR;
+zParams[1] = Z_FAR / Z_NEAR;
+zParams[2] = (MAX_DEPTH_SLICES - 1) / log2(Z_SPECIAL_NEAR / Z_FAR);
+zParams[3] = MAX_DEPTH_SLICES;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单[froxelIndexPrecomputation]: 预先计算锥素索引]
+
+#### 从锥素到深度
+
+给定一个锥素索引 $i$, 一个特殊的近平面 $sn$, 一个远平面 $f$ 和最大深度切片数 $m$, 方程 $\ref{clusterToZ}$ 可以计算给定锥素的最小深度. 
+
+$$\begin{equation}\label{clusterToZ}
+clusterToZ(i \ge 1,sn,f,m)=2^{(i-m) \frac{-\log_2(\frac{sn}{f})}{m-1}}
+\end{equation}$$
+
+对于 $i=0$, z值为0. 此方程的结果在[0..1]范围内, 应该乘以 $f$ 以得到以世界单位表示的距离. 
+
+计算着色器实现应该使用`exp2`而不是`pow`. 可以对除法进行预先计算, 并将其作为uniform值传递. 
+
+## 验证
+
+鉴于我们的光照系统的复杂性, 验证我们的实现非常重要. 我们将通过几种方式进行验证: 使用参考渲染, 光源测量和数据可视化. 
+
+[TODO] 解释光源测量验证(从渲染目标读取EV, 并与光度计/相机等的测量值进行比较)
+
+### 场景引用可视化
+
+验证场景光照的一种简单快捷的方法是, 修改着色器以输出颜色, 从而提供对相关数据的直观映射. 这可以通过使用输出伪彩色的自定义调试色调映射运算符轻松完成. 
+
+#### 亮度stop
+
+使用发光材质和IBL, 很容易获得镜面高光比其外观更亮的场景. 在色调映射和量化之后, 这类问题可能难以察觉到, 但在引用场景的空间中相当明显. 图[brightnessViz]展示了如何使用清单[tonemapLuminanceViz]中的自定义运算符来显示场景的曝光亮度. 
+
+![图[brightnessViz]: 通过颜色编码stop可视化亮度: 青色为中间灰, 蓝色为1 stop较暗, 绿色1 stop较亮等等](images/screenshot_luminance_debug.png)
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec3 Tonemap_DisplayRange(const vec3 x) {
+    // 数组中的第5种颜色(青色)代表中间灰(18％)
+    // 中间灰之上或之下的每个stop都会导致颜色偏移
+    float v = log2(luminance(x) / 0.18);
+    v = clamp(v + 5.0, 0.0, 15.0);
+    int index = int(floor(v));
+    return mix(debugColors[index], debugColors[min(15, index + 1)], fract(v));
+}
+
+const vec3 debugColors[16] = vec3[](
+     vec3(0.0, 0.0, 0.0),         // 黑色
+     vec3(0.0, 0.0, 0.1647),      // 最深的蓝色
+     vec3(0.0, 0.0, 0.3647),      // 较深的蓝色
+     vec3(0.0, 0.0, 0.6647),      // 深蓝色
+     vec3(0.0, 0.0, 0.9647),      // 蓝色
+     vec3(0.0, 0.9255, 0.9255),   // 青色
+     vec3(0.0, 0.5647, 0.0),      // 深绿色
+     vec3(0.0, 0.7843, 0.0),      // 绿色
+     vec3(1.0, 1.0, 0.0),         // 黄色
+     vec3(0.90588, 0.75294, 0.0), // 黄橙色
+     vec3(1.0, 0.5647, 0.0),      // 橙色
+     vec3(1.0, 0.0, 0.0),         // 鲜红色
+     vec3(0.8392, 0.0, 0.0),      // 红色
+     vec3(1.0, 0.0, 1.0),         // 洋红色
+     vec3(0.6, 0.3333, 0.7882),   // 紫色
+     vec3(1.0, 1.0, 1.0)          // 白色
+);
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [tonemapLuminanceViz]:  用于亮度可视化的自定义调试色调映射算子在GLSL中的实现]
+
+### 参考渲染
+
+为了利用参考渲染验证我们的实现, 我们将使用名为Mitsuba的渲染器, 它是一款商业级开源基于物理的离线路径追踪渲染器. Mitsuba提供了许多不同的积分器, 采样器和材质模型, 这样我们能够将其与我们的实时渲染器进行公平的比较. 这个路径追踪器也依赖于一种简单的XML场景描述格式, 很容易根据我们自己的场景描述自动生成这种格式. 
+
+图[mitsubaReference]和图[filamentReference]展示了一个简单的场景, 一个完全平滑的电介质球体, 分别用Mitsuba和Filament进行渲染. 
+
+![图[mitsubaReference]: 使用12核的2013 MacPro渲染2048x1440大小的图像, 耗时1分42秒](images/screenshot_ref_mitsuba.jpg)
+
+![图[filamentReference]: 在Nexus 9设备(Tegra K1 GPU)上以60 fps的速度渲染2048x1440大小的图像, 并使用MSAA 4x](images/screenshot_ref_filament.jpg)
+
+渲染两个场景的参数如下: 
+
+**Filament**
+
+- 材质
+  - 基色: sRGB 0.81, 0, 0
+  - 金属度: 0
+  - 粗糙度: 0
+  - 反射度: 0.5
+- 间接光照: IBL
+  - 256x256立方体贴图, 由cmgen根据office.exr生成
+  - 倍增器: 35,000
+- 定向光源: 平行光
+  - 线性颜色: 1.0, 0.96, 0.95
+  - 强度: 120,000 lux
+- 曝光
+  - 光圈: f/16
+  - 快门: 1/125s
+  - ISO: 100
+
+**Mitsuba**
+
+- BSDF: 粗糙塑料
+  - 分布: GGX
+  - 粗糙度: 0
+  - 漫反射: sRGB 0.81, 0, 0
+- 自发光: 环境贴图
+  - 来源: office.exr
+  - 比例: 35,000
+- 自发光: 平行光
+  - 辐照度: 线性RGB 120,000 115,200 114,000
+- Film: LDR
+  - 曝光: -15.23, 根据log2(filamentExposure)计算
+- 积分器: 路径追踪
+- 采样器: ldsampler
+  - 样本数: 256
+
+完整的Mitsuba场景见附录. 两个场景的渲染分辨率相同(2048x1440). 
+
+#### 比较
+
+两个渲染之间的细微差别来自Filament使用的各种近似: RGBM 256x256反射探头, RGBM 1024x1024背景贴图, Lambert漫反射, 拆分求和近似, DFG项的解析近似等. 
+
+图[referenceComparison]展示了两个引擎生成的图像的亮度梯度. 比较是在LDR图像上进行的. 
+
+![图[referenceComparison]: Mitsuba(左)和Filament(右)的亮度梯度](images/screenshot_ref_comparison.png)
+
+最大的差异在掠射角处, 这很可能是由于Filament使用了Lambertian漫反射项. 迪斯尼的漫反射项及其后向反射会使Filament的结果更接近Mitsuba. 
+
+## 坐标系统
+
+### 世界坐标系
+
+Filament使用Y向上的右手坐标系. 
+
+![图[coordinates]: 红 +X, 绿 +Y, 蓝 +Z(使用Marmoset工具包渲染). ](images/screenshot_coordinates.jpg)
+
+
+### 相机坐标系
+
+Filament的相机朝向其局部-Z轴. 也就是说, 在未施加任何变换的情况下, 将相机置于世界中时, 相机会向下朝向世界的-Z轴. 
+
+
+### 立方体贴图坐标系
+
+Filament使用的所有立方体贴图在进行面对齐时都遵循OpenGL惯例, 如图[cubemapCoordinates]所示. 
+
+![图[cubemapCoordinates]: 立方体贴图的水平交叉表示, 遵循OpenGL面对齐惯例.](images/screenshot_cubemap_coordinates.png)
+
+请注意, 环境背景和反射探头互为镜像(请参见节[镜像]). 
+
+
+#### 镜像
+
+为了简化反射的渲染, IBL立方体贴图以镜像方式存储在X轴上. 这是`cmgen`工具的默认行为. 这意味着在运行时, 用作环境背景的IBL立方体贴图需要再次进行镜像翻转. 
+天空盒实现这一点的一种简单方法就是使用带纹理的背面. Filament默认会进行此操作. 
+
+
+#### 正方形环境贴图
+
+要将正方形环境贴图转换为水平/垂直交叉的立方体贴图, 我们将+Z面定位在源方线性环境贴图的中心. 
+
+
+#### 环境贴图和天空盒的世界空间取向
+
+在Filament中指定天空盒或IBL时, 指定的立方体贴图的取向使其-Z面指向世界的+Z轴(这是因为Filament假定立方体贴图是镜像的, 参见节[镜像]). 但是, 由于预期环境和天空盒会被预先镜像, 因此它们的-Z面(背面)预期指向世界的-Z轴(默认情况下相机朝向该方向, 参见节[相机坐标系]). 
+
+
+# 附录
+
+## 镜面颜色
+
+金属表面的镜面反射颜色 $\fNormal$ 可以直接根据测量的光谱数据计算. 在线数据库, [Refractive Index](https://refractiveindex.info/?shelf=3d&book=metals&page=brass)提供了测量得到的针对各种材料在不同波长下的复数IOR的表格. 
+
+在本文档的前面, 我们给出了方程 $\ref{fresnelEquation}$ 用以计算给定IOR时电介质表面对应垂直入射的Fresnel反射率. 通过使用复数来表示表面的IOR, 可以将相同的方程用于导体: 
+
+$$\begin{equation}
+c_{ior} = n_{ior} + ik
+\end{equation}$$
+
+方程 $\ref{fresnelComplexIOR}$ 表示得到的Fresnel公式, 其中 $c^*$ 为复数 $c$ 的共轭: 
+
+$$\begin{equation}\label{fresnelComplexIOR}
+\fNormal(c_{ior}) = \frac{(c_{ior} - 1)(c_{ior}^* - 1)}{(c_{ior} + 1)(c_{ior}^* + 1)}
+\end{equation}$$
+
+为计算材质的镜面反射颜色, 我们需要对整个可见光谱的每个光谱点计算复数IOR的复数Fresnel方程. 对每个光谱点, 我们得到一个光谱反射样本. 要得到垂直入射的RGB颜色, 我们必须将每个样本乘上CIE XYZ CMF(颜色匹配函数)以及所需光源的光谱功率分布. 我们选择标准光源D65, 因为我们想要计算sRGB色彩空间中的颜色. 
+
+然后我们对所有样本进行求和(积分)并归一化, 得到XYZ颜色空间中的 $\fNormal$. 由此, 在应用光电传递函数(OETF, 通常称为"伽马"曲线)之后, 使用简单的色彩空间转换就得到线性sRGB颜色或非线性sRGB颜色. 请注意, 对于某些材质, 如黄金, 最终得到的sRGB颜色可能会超出色域. 我们使用简单的归一化步骤进行色域重新映射, 成本很低, 但考虑在具有更宽色域的色彩空间(如BT.2020)中进行计算会很有趣。
+
+为了达到预期效果, 我们使用了ICE 1931 2度CMF, 范围从360nm到830nm, 间隔1nm ([来源](http://cvrl.ioo.ucl.ac.uk/cmfs.htm)), 以及CIE标准光源D65的相对光谱功率分布, 范围从300nm到830nm, 间隔5nm([来源](http://files.cie.co.at/204.xls)). 
+
+我们的实现见清单[specularColorImpl], 为简洁起见省略了实际数据. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// CIE 1931 2度颜色匹配函数(CMF)
+// 从360nm到830nm, 间隔1nm
+//
+// 数据来源:
+//     http://cvrl.ioo.ucl.ac.uk/cmfs.htm
+//     http://cvrl.ioo.ucl.ac.uk/database/text/cmfs/ciexyz31.htm
+const size_t CIE_XYZ_START = 360;
+const size_t CIE_XYZ_COUNT = 471;
+const float3 CIE_XYZ[CIE_XYZ_COUNT] = { ... };
+
+// CIE 标准光源D65的相对光谱功率分布
+// 从300nm到830nm, 间隔5nm
+//
+// 数据来源:
+//     https://en.wikipedia.org/wiki/Illuminant_D65
+//     https://cielab.xyz/pdf/CIE_sel_colorimetric_tables.xls
+const size_t CIE_D65_INTERVAL = 5;
+const size_t CIE_D65_START = 300;
+const size_t CIE_D65_END = 830;
+const size_t CIE_D65_COUNT = 107;
+const float CIE_D65[CIE_D65_COUNT] = { ... };
+
+struct Sample {
+    float w = 0.0f; // 波长
+    std::complex<float> ior; // 复数IOR, n + ik
+};
+
+static float illuminantD65(float w) {
+    auto i0 = size_t((w - CIE_D65_START) / CIE_D65_INTERVAL);
+    uint2 indexBounds{i0, std::min(i0 + 1, CIE_D65_END)};
+
+    float2 wavelengthBounds = CIE_D65_START + float2{indexBounds} * CIE_D65_INTERVAL;
+    float t = (w - wavelengthBounds.x) / (wavelengthBounds.y - wavelengthBounds.x);
+    return lerp(CIE_D65[indexBounds.x], CIE_D65[indexBounds.y], t);
+}
+
+// For std::lower_bound
+bool operator<(const Sample& lhs, const Sample& rhs) {
+    return lhs.w < rhs.w;
+}
+
+// 波长 w 必须介于360nm和830nm之间
+static std::complex<float> findSample(const std::vector<Sample>& samples, float w) {
+    auto i1 = std::lower_bound(
+	        samples.begin(), samples.end(), Sample{w, 0.0f + 0.0if});
+    auto i0 = i1 - 1;
+
+    // 对复数IOR进行插值
+    float t = (w - i0->w) / (i1->w - i0->w);
+    float n = lerp(i0->ior.real(), i1->ior.real(), t);
+    float k = lerp(i0->ior.imag(), i1->ior.imag(), t);
+    return { n, k };
+}
+
+static float fresnel(const std::complex<float>& sample) {
+    return (((sample - (1.0f + 0if)) * (std::conj(sample) - (1.0f + 0if))) /
+            ((sample + (1.0f + 0if)) * (std::conj(sample) + (1.0f + 0if)))).real();
+}
+
+static float3 XYZ_to_sRGB(const float3& v) {
+    const mat3f XYZ_sRGB{
+             3.2404542f, -0.9692660f,  0.0556434f,
+            -1.5371385f,  1.8760108f, -0.2040259f,
+            -0.4985314f,  0.0415560f,  1.0572252f
+    };
+    return XYZ_sRGB * v;
+}
+
+// 输出线性sRGB颜色
+static float3 computeColor(const std::vector<Sample>& samples) {
+    float3 xyz{0.0f};
+    float y = 0.0f;
+
+    for (size_t i = 0; i < CIE_XYZ_COUNT; i++) {
+        // 当前波长
+        float w = CIE_XYZ_START + i;
+
+        // 找到与波长对应的最适合的CIE XYZ样本
+        auto sample = findSample(samples, w);
+        // 计算垂直入射时的Fresnel反射率
+        float f0 = fresnel(sample);
+
+        // 我们需要乘以光源的光谱功率分布
+        float d65 = illuminantD65(w);
+
+        xyz += f0 * CIE_XYZ[i] * d65;
+        y += CIE_XYZ[i].y * d65;
+    }
+
+    // 归一化, 这样每个波长100％的反射对应 Y=1
+    xyz /= y;
+
+    float3 linear = XYZ_to_sRGB(xyz);
+
+    // 对超出色域的值归一化
+    if (any(greaterThan(linear, float3{1.0f}))) linear *= 1.0f / max(linear);
+
+    return linear;
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [specularColorImpl]: 根据光谱数据计算金属表面基色的C++实现]
+
+特别感谢Naty Hoffman在这个主题上的宝贵帮助. 
+
+## IBL的重要性采样
+
+在离散区域中, 积分可以使用方程 $\ref{iblSampling}$ 中定义的采样进行近似. 
+
+$$\begin{equation}\label{iblSampling}
+\Lout(n,v,\Theta) \equiv \frac{1}{N} \sum_{i}^{N} f(l_{i}^{uniform},v,\Theta) L_{\perp}(l_i) \left< n \cdot l_i^{uniform} \right>
+\end{equation}$$
+
+不幸的是, 计算这个积分需要的采样过多. 通常使用的一种技术是更频繁地选择更"重要"的采样, 这称为 _重要性采样_. 
+在我们的例子中, 我们将使用微面片法向的分布 $D_{ggx}$ 作为重要样本的分布. 
+
+使用重要性采样计算 $\Lout(n, v, \Theta)$ 的方法在方程 $\ref{annexIblImportanceSampling}$ 中给出. 
+
+$$\begin{equation}\label{annexIblImportanceSampling}
+\Lout(n,v,\Theta) \equiv \frac{1}{N} \sum_{i}^{N} \frac{f(l_{i},v,\Theta)}{p(l_i,v,\Theta)} L_{\perp}(l_i) \left< n \cdot l_i \right>
+\end{equation}$$
+
+在方程 $\ref{annexIblImportanceSampling}$ 中, $p$ 为 _重要性采样_ $l_i$ 分布的概率密度函数(PDF). 这些样本依赖于 $h_i$, $v$ 和 $\alpha$. 
+PDF的定义见方程 $\ref{iblPDF}$. 
+
+$h_i$ 由我们选择的分布给出, 详细信息请参阅节[选择重要方向]. 
+
+_重要方向样本_ $l_i$ 为 $v$ 绕 $h_i$ 的反射, 因此其PDF与 $h_i$ **不同**. 经变换后, 一个分布的PDF由下式给出: 
+
+$$\begin{equation}
+p(T_r(x)) = p(x) |J(T_r)|
+\end{equation}$$
+
+其中 $|J(T_r)|$ 为变换的雅可比行列式. 在我们的例子中, 我们考虑从 $h_i$ 到 $l_i$ 的变换, 其雅可比行列式在 $\ref{iblPDF}$ 中给出. 
+
+$$\begin{equation}\label{iblPDF}
+p(l,v,\Theta) = D(h,\alpha) \left< \NoH \right> |J_{h \rightarrow l}| \\
+|J_{h \rightarrow l}| = \frac{1}{4 \left< \VoH \right>}
+\end{equation}$$
+
+### 选择重要方向
+
+详细信息请参阅节[选择BRDF采样的重要方向]. 给定均匀分布 $(\zeta_{\phi}, \zeta_{\theta})$, 重要方向 $l$ 由方程 $\ref{importantDirection}$ 定义. 
+
+$$\begin{equation}\label{importantDirection}
+\phi = 2 \pi \zeta_{\phi} \\
+\theta = \cos^{-1} \sqrt{\frac{1 - \zeta_{\theta}}{(\alpha^2 - 1)\zeta_{\theta}+1}} \\
+l = \{ \cos \phi \sin \theta, \sin \phi \sin \theta, \cos \theta \}
+\end{equation}$$
+
+通常, 使用Hammersley均匀分布算法选择 $(\zeta_{\phi},\zeta_{\theta})$, 具体细节见节[Hammersley序列]. 
+
+### 预过滤重要性采样
+
+重要性采样生成重要方向时只考虑PDF; 特别是, 它忽略了IBL的实际内容. 如果后者在没有大量样本的区域中包含高频信息, 那么得到积分不准确. 这可以通过使用一种称为 _预过滤重要性采样_ 的技术进行改进, 此外, 这种方法使用更少的样本就可以得到收敛的积分. 
+
+预过滤重要性采样使用多个环境图像, 这些图像采用的低通滤波越来越低. 这通常使用mipmap和盒式滤波实现, 非常高效. 根据样本重要性选择LOD, 即, 低概率样本使用更高的LOD索引(更多过滤). 
+
+这种技术在[#Krivanek08]中有详细描述. 
+
+立方体贴图LOD通过以下方式确定: 
+
+$$\begin{align*}
+lod &= \log_4 \left( K\frac{\Omega_s}{\Omega_p} \right) \\
+K &= 4.0 \\
+\Omega_s &= \frac{1}{N \cdot p(l_i)} \\
+\Omega_p &\approx \frac{4\pi}{6 \cdot width \cdot height}
+\end{align*}$$
+
+其中 $K$ 为根据经验确定的常数, $p$ 为BRDF的PDF, $\Omega_{s}$ 为与样本关联的立体角, $\Omega_p$ 为与立方体贴图中的纹素相关联的立体角. 
+
+立方体贴图采样使用无缝三线性滤波. 对跨面的立方体贴图进行采样时, 使用OpenGL的无缝采样功能或任何其他能够避免/减少接缝的技术, 对保证采样正确非常重要. 
+
+表[importanceSamplingViz]展示了对图[importanceSamplingRef]进行重要性采样和预过滤重要性采样所得结果之间的比较. 
+
+![图[importanceSamplingRef]: 重要性采样图像参考](images/image_is_original.png)
+
+
+ 样本 |      重要性采样      |    预过滤重要性采样 
+---------|-------------------------------|---------------------------------------
+  4096   | ![](images/image_is_4096.png) | &nbsp;
+  1024   | ![](images/image_is_1024.png) | ![](images/image_fis_1024.png)
+  32     | ![](images/image_is_32.png)   | ![](images/image_fis_32.png)
+[表 [importanceSamplingViz]: 重要性采样与预滤波重要性采样, 其中 $\alpha = 0.4$]
+
+下面的比较中使用的参考渲染没有使用近似. 特别是, 它没有假定 $v = n$, 并且没有使用拆分求和近似. 预过滤的渲染结果使用了本节所讨论的所有技术: 预过滤的立方体贴图, DFG项的解析公式, 当然还有拆分求和近似. 
+
+左: 参考渲染结果, 右: 预过滤的重要性采样. 
+
+![](images/image_is_ref_1.png) ![](images/image_filtered_1.png)
+![](images/image_is_ref_2.png) ![](images/image_filtered_2.png)
+![](images/image_is_ref_3.png) ![](images/image_filtered_3.png)
+![](images/image_is_ref_4.png) ![](images/image_filtered_4.png)
+
+## 选择BRDF采样的重要方向
+
+为简单起见, 我们使用BRDF的 $D$ 项作为PDF, 但PDF必须进行归一化, 使得半球上的积分为1: 
+
+$$\begin{equation}
+\int_{\Omega}p(m)dm = 1 \\
+\int_{\Omega}D(m)(n \cdot m)dm = 1 \\
+\int_{\phi=0}^{2\pi}\int_{\theta=0}^{\frac{\pi}{2}}D(\theta,\phi) \cos \theta \sin \theta d\theta d\phi = 1 \\
+\end{equation}$$
+
+因此, BRDF的PDF可以用方程 $\ref{importantPDF}$ 表示: 
+
+$$\begin{equation}\label{importantPDF}
+p(\theta,\phi) = \frac{\alpha^2}{\pi[\cos^2\theta (\alpha^2-1) + 1] \cos\theta \sin\theta}
+\end{equation}$$
+
+$\sin \theta$ 项来自立体角微分 $\sin\theta d\phi d\theta$, 因为我们对球面进行积分. 我们独立地对 $\theta$ 和 $\phi$ 进行采样: 
+
+$$\begin{align*}
+p(\theta) &= \int_0^{2\pi} p(\theta,\phi) d\phi = \frac{2\alpha^2}{\cos^2\theta (\alpha^2-1) + 1} \cos\theta \sin\theta \\
+p(\phi) &= \frac{p(\theta,\phi)}{p(\phi)} = \frac{1}{2\pi}
+\end{align*}$$
+
+对于各向同性的法线分布, 公式 $p(\phi)$ 是正确的. 
+
+然后, 我们计算每个变量的累积分布函数(CDF): 
+
+$$\begin{align*}
+P(s_{\phi}) &= \int_{0}^{s_{\phi}} p(\phi) d\phi = \frac{s_{\phi}}{2\pi} \\
+P(s_{\theta}) &= \int_{0}^{s_{\theta}} p(\theta) d\theta = 2 \alpha^2 \left( \frac{1}{(2\alpha^4-4\alpha^2+2) \cos s_{\theta}^2 + 2\alpha^2 - 2} - \frac{1}{2\alpha^4-2\alpha^2} \right)
+\end{align*}$$
+
+我们将 $ P(s_{\phi}) $ 和 $ P(s_{\theta}) $ 设置为随机变量 $ \zeta_{\phi} $ 和 $ \zeta_{\theta} $, 并分别求解 $ s_{\phi} $ 和 $ s_{\theta} $: 
+
+$$\begin{align*}
+P(s_{\phi}) &= \zeta_{\phi} \rightarrow s_{\phi} = 2\pi\zeta_{\phi} \\
+P(s_{\theta}) &= \zeta_{\theta} \rightarrow s_{\theta} = \cos^{-1} \sqrt{\frac{1-\zeta_{\theta}}{(\alpha^2-1)\zeta_{\theta}+1}}
+\end{align*}$$
+
+因此, 给定均匀分布 $ (\zeta_{\phi},\zeta_{\theta}) $, 我们的重要方向 $l$ 定义为: 
+
+$$\begin{align*}
+\phi &= 2\pi\zeta_{\phi} \\
+\theta &= \cos^{-1} \sqrt{\frac{1-\zeta_{\theta}}{(\alpha^2-1)\zeta_{\theta}+1}} \\
+l &= \{ \cos\phi \sin\theta,\sin\phi \sin\theta,\cos\theta \}
+\end{align*}$$
+
+## Hammersley序列
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vec2f hammersley(uint i, float numSamples) {
+    uint bits = i;
+    bits = (bits << 16) | (bits >> 16);
+    bits = ((bits & 0x55555555) << 1) | ((bits & 0xAAAAAAAA) >> 1);
+    bits = ((bits & 0x33333333) << 2) | ((bits & 0xCCCCCCCC) >> 2);
+    bits = ((bits & 0x0F0F0F0F) << 4) | ((bits & 0xF0F0F0F0) >> 4);
+    bits = ((bits & 0x00FF00FF) << 8) | ((bits & 0xFF00FF00) >> 8);
+    return vec2f(i / numSamples, bits / exp2(32));
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[Hammersley序列生成器的C ++实现]
+
+## 预计算L用于基于图像的光照
+
+$L_{DFG}$ 项仅依赖于$\NoV$. 下面, 随意将法线设置为 $ n=\left[0, 0, 1\right] $, 并选择 $v$ 满足 $\NoV$. 向量 $h_i$ 为 $D_{GGX}(\alpha)$ 重要方向样本 $i$ . 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+float GDFG(float NoV, float NoL, float a) {
+    float a2 = a * a;
+    float GGXL = NoV * sqrt((-NoL * a2 + NoL) * NoL + a2);
+    float GGXV = NoL * sqrt((-NoV * a2 + NoV) * NoV + a2);
+    return (2 * NoL) / (GGXV + GGXL);
+}
+
+float2 DFG(float NoV, float a) {
+    float3 V;
+    V.x = sqrt(1.0f - NoV*NoV);
+    V.y = 0.0f;
+    V.z = NoV;
+
+    float2 r = 0.0f;
+    for (uint i = 0; i < sampleCount; i++) {
+        float2 Xi = hammersley(i, sampleCount);
+        float3 H = importanceSampleGGX(Xi, a, N);
+        float3 L = 2.0f * dot(V, H) * H - V;
+
+        float VoH = saturate(dot(V, H));
+        float NoL = saturate(L.z);
+        float NoH = saturate(H.z);
+
+        if (NoL > 0.0f) {
+            float G = GDFG(NoV, NoL, a);
+            float Gv = G * VoH / NoH;
+            float Fc = pow(1 - VoH, 5.0f);
+            r.x += Gv * (1 - Fc);
+            r.y += Gv * Fc;
+        }
+    }
+    return r * (1.0f / sampleCount);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[$ L_{DFG} $ 项的C++实现]
+
+## 球谐函数
+
+          符号             |           定义
+:---------------------------:|:---------------------------|
+$K^m_l$                      | 归一化因子
+$P^m_l(x)$                   | 连带勒让德多项式
+$y^m_l$                      | 球谐函数基, 或SH基
+$L^m_l$                      | 定义在单位球上的 $L(s)$ 函数的SH系数
+[表 [shSymbols]: 球谐函数的符号和定义]
+
+### 基函数
+
+单位球面上点的球面参数化: 
+
+$$\begin{equation}
+\{ x, y, z \} = \{ \cos \phi \sin \theta, \sin \phi \sin \theta, \cos \theta \}
+\end{equation}$$
+
+复球谐函数基由下式给出: 
+
+$$\begin{equation}
+Y^m_l(\theta, \phi) = K^m_l e^{im\theta} P^{|m|}_l(\cos \theta), l \in N, -l <= m <= l
+\end{equation}$$
+
+但我们只需要实数基: 
+
+$$\begin{align*}
+y^{m > 0}_l &= \sqrt{2} K^m_l \cos(m \phi) P^m_l(\cos \theta) \\
+y^{m < 0}_l &= \sqrt{2} K^m_l \sin(m \phi) P^{|m|}_l(\cos \theta) \\
+y^0_l &= K^0_l P^0_l(\cos \theta)
+\end{align*}$$
+
+归一化因子由下式给出: 
+
+$$\begin{equation}
+K^m_l = \sqrt{\frac{(2l + 1)(l - |m|)!}{4 \pi (l + |m|)!}}
+\end{equation}$$
+
+连带勒让德多项式 $P^{|m|}_l$ 可以通过下式递归计算: 
+
+$$\begin{equation}\label{shRecursions}
+P^0_0(x) = 1 \\
+P^0_1(x) = x \\
+P^l_l(x) = (-1)^l (2l - 1)!!(1 - x^2)^{\frac{l}{2}} \\
+P^m_l(x) = \frac{ (2l - 1) x P^m_{l - 1} - (l + m - 1) P^m_{l - 2} }{l - m} \\
+\end{equation}$$
+
+计算 $y^{|m|}_l$ 需要先计算 $P^{|m|}_l(z)$. 
+使用方程 $\ref{shRecursions}$ 中的递归关系很容易做到. 
+第三个递归可用于在表[basisFunctions]中进行"对角移动", 即计算 $y^0_0$, $y^1_1$, $y^2_2$ 等. 
+然后, 第四个递归可用于垂直移动. 
+
+   波段指数 |  基函数 $-l <= m <= l$
+:-----------:|:---------------------------------:|
+$l = 0$      | $y^0_0$
+$l = 1$      | $y^{-1}_1$ $y^0_1$ $y^1_1$
+$l = 2$      | $y^{-2}_2$ $y^{-1}_2$ $y^0_2$ $y^1_2$ $y^2_2$
+[表 [basisFunctions]: 每个波段的基函数]
+
+递归地计算三角项也很容易: 
+
+$$\begin{align*}
+C_m &\equiv \cos(m \phi) \\
+S_m &\equiv \sin(m \phi) \\
+\{ x, y, z \} &= \{ \cos \phi \sin \theta, \sin \phi \sin \theta, \cos \theta \}
+\end{align*}$$
+
+使用和差化积公式: 
+
+$$\begin{align*}
+\cos(m \phi + \phi) &= \cos(m \phi) \cos(\phi) - \sin(m \phi) \sin(\phi) \Leftrightarrow C_{m + 1} = \frac{(x C_m - y S_m)}{\sin(\theta)^{|m + 1|}} \\
+\sin(m \phi + \phi) &= \sin(m \phi) \sin(\phi) + \cos(m \phi) \sin(\phi) \Leftrightarrow S_{m + 1} = \frac{(x S_m - y C_m)}{\sin(\theta)^{|m + 1|}}
+\end{align*}$$
+
+上面的方程有一个额外的项 $\sin(\theta)^{-|m + 1|}$, 但我们可以通过乘以 $P^l_l(z)$ 以及 $\sin(\theta)^{|m + 1|}$来补偿 $P^{|m|}_l(z)$ 递归中的项, 这大大简化了 $\ref{shRecursions}$ 中的第三个方程, 因为 $P^l_l(\cos \theta) \sin(\theta)^{-l} = (-1)^l(2l - 1)!!$. 
+
+清单[nonNormalizedSHBasis]展示了用于计算非归一化SH基 $\frac{y^m_l(s)}{\sqrt{2} K^m_l}$ 的C++代码: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+static inline size_t SHindex(ssize_t m, size_t l) {
+    return l * (l + 1) + m;
+}
+
+void computeShBasis(
+        double* const SHb,
+        size_t numBands,
+        const vec3& s)
+{
+    // 单独处理 m=0, 因为它只有一个系数
+    double Pml_2 = 0;
+    double Pml_1 = 1;
+    SHb[0] =  Pml_1;
+    for (ssize_t l = 1; l < numBands; l++) {
+        double Pml = ((2 * l - 1) * Pml_1 * s.z - (l - 1) * Pml_2) / l;
+        Pml_2 = Pml_1;
+        Pml_1 = Pml;
+        SHb[SHindex(0, l)] = Pml;
+    }
+    double Pmm = 1;
+    for (ssize_t m = 1; m < numBands ; m++) {
+        Pmm = (1 - 2 * m) * Pmm;
+        double Pml_2 = Pmm;
+        double Pml_1 = (2 * m + 1)*Pmm*s.z;
+        // l == m
+        SHb[SHindex(-m, m)] = Pml_2;
+        SHb[SHindex( m, m)] = Pml_2;
+        if (m + 1 < numBands) {
+            // l == m+1
+            SHb[SHindex(-m, m + 1)] = Pml_1;
+            SHb[SHindex( m, m + 1)] = Pml_1;
+            for (ssize_t l = m + 2; l < numBands; l++) {
+                double Pml = ((2 * l - 1) * Pml_1 * s.z - (l + m - 1) * Pml_2)
+                        / (l - m);
+                Pml_2 = Pml_1;
+                Pml_1 = Pml;
+                SHb[SHindex(-m, l)] = Pml;
+                SHb[SHindex( m, l)] = Pml;
+            }
+        }
+    }
+    double Cm = s.x;
+    double Sm = s.y;
+    for (ssize_t m = 1; m <= numBands ; m++) {
+        for (ssize_t l = m; l < numBands ; l++) {
+            SHb[SHindex(-m, l)] *= Sm;
+            SHb[SHindex( m, l)] *= Cm;
+        }
+        double Cm1 = Cm * s.x - Sm * s.y;
+        double Sm1 = Sm * s.x + Cm * s.y;
+        Cm = Cm1;
+        Sm = Sm1;
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [nonNormalizedSHBasis]: 计算非归一化SH基的C++实现]
+
+前三个波段的SH基 $y^m_l(s)$: 
+
+   Band  |               $m = -2$               |                $m = -1$               |                      $m = 0$                        |                $m = 1$                |                    $m = 2$                    |
+:-------:|:------------------------------------:|:-------------------------------------:|:---------------------------------------------------:|:-------------------------------------:|:---------------------------------------------:|
+$l = 0$  |                                      |                                       | $\frac{1}{2}\sqrt{\frac{1}{\pi}}$                   |                                       |                                               |
+$l = 1$  |                                      | $-\frac{1}{2}\sqrt{\frac{3}{\pi}}y$   | $\frac{1}{2}\sqrt{\frac{3}{\pi}}z$                  | $-\frac{1}{2}\sqrt{\frac{3}{\pi}}x$   |                                               |
+$l = 2$  | $\frac{1}{2}\sqrt{\frac{15}{\pi}}xy$ | $-\frac{1}{2}\sqrt{\frac{15}{\pi}}yz$ | $\frac{1}{4}\sqrt{\frac{5}{\pi}}(2z^2 - x^2 - y^2)$ | $-\frac{1}{2}\sqrt{\frac{15}{\pi}}xz$ | $\frac{1}{4}\sqrt{\frac{15}{\pi}}(x^2 - y^2)$ |
+[表 [basisFunctions]: 每个波段的基函数]
+
+### 分解和重建
+
+定义在球面上的函数 $L(S)$ 可以投影到SH基上, 如下所示: 
+
+$$\begin{equation}
+L^m_l = \int_\Omega L(s) y^m_l(s) ds \\
+L^m_l = \int_{\theta = 0}^{\pi} \int_{\phi = 0}^{2\pi} L(\theta, \phi) y^m_l(\theta, \phi) \sin \theta d\theta d\phi
+\end{equation}$$
+
+注意, 每个 $L^m_l$ 为3个值的向量, 每个RGB颜色通道一个. 
+
+SH系数的逆变换, 或重建, 或渲染由下式给出: 
+
+$$\begin{equation}
+\hat{L}(s) = \sum_l \sum_{m = -l}^l L^m_l y^m_l(s)
+\end{equation}$$
+
+### $\left< \cos \theta \right>$ 的分解
+
+由于 $\left< \cos \theta \right>$ 与 $\phi$ 无关(不依赖方位角), 因此积分可简化为: 
+
+$$\begin{align*}
+C^0_l &= 2\pi \int_0^{\pi} \left< \cos \theta \right> y^0_l(\theta) \sin \theta d\theta \\
+C^0_l &= 2\pi K^没_l \int_0^{\frac{\pi}{2}} P^0_l(\cos \theta) \cos \theta \sin \theta d\theta \\
+C^m_l &= 0, m != 0
+\end{align*}$$
+
+在[#Ramamoorthi01]中给出了积分的解析解: 
+
+$$\begin{align*}
+C_1 &= \sqrt{\frac{\pi}{3}} \\
+C_{odd} &= 0 \\
+C_{l, even} &= 2\pi \sqrt{\frac{2l + 1}{4\pi}} \frac{(-1)^{\frac{l}{2} - 1}}{(l + 2)(l - 1)} \frac{l!}{2^l (\frac{l!}{2})^2}
+\end{align*}$$
+
+前几个系数为: 
+
+$$\begin{align*}
+C_0 &= +0.88623 \\
+C_1 &= +1.02333 \\
+C_2 &= +0.49542 \\
+C_3 &= +0.00000 \\
+C_4 &= -0.11078
+\end{align*}$$
+
+合理地近似 $\left< \cos \theta \right>$ 只需要很少几个系数, 如图[shCosThetaApprox]所示. 
+
+![图[shCosThetaApprox]: 用SH系数近似 $cos \theta$](images/chart_sh_cos_thera_approx.png)
+
+### 卷积
+
+具有圆对称性的核 $h$ 的卷积可以直接在SH空间中轻松应用: 
+
+$$\begin{equation}
+(h * f)^m_l = \sqrt{\frac{4\pi}{2l + 1}} h^0_l(s) f^m_l(s)
+\end{equation}$$
+
+方便地, $\sqrt{\frac{4\pi}{2l + 1}} = \frac{1}{K^0_l}$, 所以在实践中我们将 $C_l$ 预先乘以$\frac{1}{K^0_l}$, 得到一个更简单的表达式: 
+
+$$\begin{equation}
+\hat{C}_{l, even} = 2\pi \frac{(-1)^{\frac{l}{2} - 1}}{(l + 2)(l - 1)} \frac{l!}{2^l (\frac{l!}{2})^2} \\
+\hat{C}_l = \frac{2\pi}{3}
+\end{equation}$$
+
+以下是计算 $\hat{C}_l$ 的C++代码: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+static double factorial(size_t n, size_t d = 1);
+
+// < cos(theta) > 预先乘以1/K(0,l)的SH系数
+double computeTruncatedCosSh(size_t l) {
+    if (l == 0) {
+        return M_PI;
+    } else if (l == 1) {
+        return 2 * M_PI / 3;
+    } else if (l & 1) {
+        return 0;
+    }
+    const size_t l_2 = l / 2;
+    double A0 = ((l_2 & 1) ?1.0 : -1.0) / ((l + 2) * (l - 1));
+    double A1 = factorial(l, l_2) / (factorial(l_2) * (1 << l));
+    return 2 * M_PI * A0 * A1;
+}
+
+// 返回 n!/ d!
+double factorial(size_t n, size_t d ) {
+   d = std::max(size_t(1), d);
+   n = std::max(size_t(1), n);
+   double r = 1.0;
+   if (n == d) {
+       // 省略
+   } else if (n > d) {
+       for ( ; n>d ; n--) {
+           r *= n;
+       }
+   } else {
+       for ( ; d>n ; d--) {
+           r *= d;
+       }
+       r = 1.0 / r;
+   }
+   return r;
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+## Mitsuba的示例验证场景
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+&lt;scene version="0.5.0"&gt;
+    &lt;integrator type="path"/&gt;
+
+    &lt;shape type="serialized" id="sphere_mesh"&gt;
+        &lt;string name="filename" value="plastic_sphere.serialized"/&gt;
+        &lt;integer name="shapeIndex" value="0"/&gt;
+
+        &lt;bsdf type="roughplastic"&gt;
+            &lt;string name="distribution" value="ggx"/&gt;
+            &lt;float name="alpha" value="0.0"/&gt;
+            &lt;srgb name="diffuseReflectance" value="0.81, 0.0, 0.0"/&gt;
+        &lt;/bsdf&gt;
+    &lt;/shape&gt;
+
+    &lt;emitter type="envmap"&gt;
+        &lt;string name="filename" value="../../environments/office/office.exr"/&gt;
+        &lt;float name="scale" value="35000.0" /&gt;
+        &lt;boolean name="cache" value="false" /&gt;
+    &lt;/emitter&gt;
+
+    &lt;emitter type="directional"&gt;
+        &lt;vector name="direction" x="-1" y="-1" z="1" /&gt;
+        &lt;rgb name="irradiance" value="120000.0, 115200.0, 114000.0" /&gt;
+    &lt;/emitter&gt;
+
+    &lt;sensor type="perspective"&gt;
+        &lt;float name="farClip" value="12.0"/&gt;
+        &lt;float name="focusDistance" value="4.1"/&gt;
+        &lt;float name="fov" value="45"/&gt;
+        &lt;string name="fovAxis" value="y"/&gt;
+        &lt;float name="nearClip" value="0.01"/&gt;
+        &lt;transform name="toWorld"&gt;
+
+            &lt;lookat target="0, 0, 0" origin="0, 0, -3.1" up="0, 1, 0"/&gt;
+        &lt;/transform&gt;
+
+        &lt;sampler type="ldsampler"&gt;
+            &lt;integer name="sampleCount" value="256"/&gt;
+        &lt;/sampler&gt;
+
+        &lt;film type="ldrfilm"&gt;
+            &lt;integer name="height" value="1440"/&gt;
+            &lt;integer name="width" value="2048"/&gt;
+            &lt;float name="exposure" value="-15.23" /&gt;
+            &lt;rfilter type="gaussian"/&gt;
+        &lt;/film&gt;
+    &lt;/sensor&gt;
+&lt;/scene&gt;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+## 使用锥素进行灯光指定
+
+将灯光指定给锥素时, 可以使用两个计算着色器在GPU上实现. 第一个, 如清单[FroxelGeneration]所示, 在SSBO中创建锥素数据(4个平面+每个锥素的最小Z和最大Z), 并且只需运行一次. 着色器需要以下uniforms值: 
+
+投影矩阵: 用于渲染场景的投影矩阵(视图空间到剪切空间的变换). 
+
+逆投影矩阵: 用于渲染场景的投影矩阵的逆矩阵(剪切空间到视图空间的变换). 
+
+深度参数: $-\log_2(\frac{z_{lighnear}}{z_{far}}) \frac{1}{maxSlices-1}$, 深度切片的最大数目, Z近和Z远. 
+
+剪切空间大小: $\frac{F_x \times F_r}{w} \times 2$, 其中 $F_x$ 为X轴上图块的数目, $F_r$ 为图块的分辨率, 以像素为单位, w为渲染目标的宽度, 以像素为单位. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#version 310 es
+
+precision highp float;
+precision highp int;
+
+
+#define FROXEL_RESOLUTION 80u
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(location = 0) uniform mat4 projectionMatrix;
+layout(location = 1) uniform mat4 projectionInverseMatrix;
+layout(location = 2) uniform vec4 depthParams; // index scale, index bias, near, far
+layout(location = 3) uniform float clipSpaceSize;
+
+struct Froxel {
+    // 注意: 平面应存储在 vec4[4] 中, 
+    // 但Adreno着色器编译器有一个bug, 
+    // 可以导致无法在循环内正确地读取数据
+    vec4 plane0;
+    vec4 plane1;
+    vec4 plane2;
+    vec4 plane3;
+    vec2 minMaxZ;
+};
+
+layout(binding = 0, std140) writeonly restrict buffer FroxelBuffer {
+    Froxel data[];
+} froxels;
+
+shared vec4 corners[4];
+shared vec2 minMaxZ;
+
+vec4 projectionToView(vec4 p) {
+    p = projectionInverseMatrix * p;
+    return p / p.w;
+}
+
+vec4 createPlane(vec4 b, vec4 c) {
+    // 标准平面方程, (0,0,0)
+    return vec4(normalize(cross(c.xyz, b.xyz)), 1.0);
+}
+
+void main() {
+    uint index = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x +
+            gl_WorkGroupID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y;
+
+    if (gl_LocalInvocationIndex == 0u) {
+        // 首先平铺屏幕并为当前贴片构建视锥
+        vec2 renderTargetSize = vec2(FROXEL_RESOLUTION * gl_NumWorkGroups.xy);
+        vec2 frustumMin = vec2(FROXEL_RESOLUTION * gl_WorkGroupID.xy);
+        vec2 frustumMax = vec2(FROXEL_RESOLUTION * (gl_WorkGroupID.xy + 1u));
+
+        corners[0] = vec4(
+            frustumMin.x / renderTargetSize.x * clipSpaceSize - 1.0,
+            (renderTargetSize.y - frustumMin.y) / renderTargetSize.y
+			    * clipSpaceSize - 1.0,
+            1.0,
+            1.0
+        );
+        corners[1] = vec4(
+            frustumMax.x / renderTargetSize.x * clipSpaceSize - 1.0,
+            (renderTargetSize.y - frustumMin.y) / renderTargetSize.y
+			    * clipSpaceSize - 1.0,
+            1.0,
+            1.0
+        );
+        corners[2] = vec4(
+            frustumMax.x / renderTargetSize.x * clipSpaceSize - 1.0,
+            (renderTargetSize.y - frustumMax.y) / renderTargetSize.y
+			    * clipSpaceSize - 1.0,
+            1.0,
+            1.0
+        );
+        corners[3] = vec4(
+            frustumMin.x / renderTargetSize.x * clipSpaceSize - 1.0,
+            (renderTargetSize.y - frustumMax.y) / renderTargetSize.y
+			    * clipSpaceSize - 1.0,
+            1.0,
+            1.0
+        );
+
+        uint froxelSlice = gl_WorkGroupID.z;
+        minMaxZ = vec2(0.0, 0.0);
+        if (froxelSlice > 0u) {
+            minMaxZ.x = exp2((float(froxelSlice) - depthParams.y) * depthParams.x)
+                    * depthParams.w;
+        }
+        minMaxZ.y = exp2((float(froxelSlice + 1u) - depthParams.y) * depthParams.x)
+                * depthParams.w;
+    }
+
+    if (gl_LocalInvocationIndex == 0u) {
+        vec4 frustum[4];
+        frustum[0] = projectionToView(corners[0]);
+        frustum[1] = projectionToView(corners[1]);
+        frustum[2] = projectionToView(corners[2]);
+        frustum[3] = projectionToView(corners[3]);
+
+        froxels.data[index].plane0 = createPlane(frustum[0], frustum[1]);
+        froxels.data[index].plane1 = createPlane(frustum[1], frustum[2]);
+        froxels.data[index].plane2 = createPlane(frustum[2], frustum[3]);
+        froxels.data[index].plane3 = createPlane(frustum[3], frustum[0]);
+        froxels.data[index].minMaxZ = minMaxZ;
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [froxelGeneration]: 锥素数据生成的GLSL实现(计算着色器)]
+
+清单[froxelEvaluation]所示的第二个计算着色器处理每一帧(如果相机和/或灯光发生变化), 并将所有灯光指定到各自的锥素. 这个着色器只依赖几个uniforms值(点光源/聚光灯和视图矩阵的数目)和四个SSBO: 
+
+灯光索引缓冲区: 对于每个锥素, 影响该锥素的所有灯光的索引. 首先写入点光源的索引, 如果剩余空间足够, 也会写入聚光灯的索引. 值0x7fffffffu将点光源和聚光灯分开, 和/或标记锥素灯光列表的末尾. 每个锥素都有最大数量的灯光(点光源+聚光灯). 
+
+点光源缓冲区: 描述场景中点光源的结构数组. 
+
+聚光灯缓冲区: 描述场景中聚光灯的结构数组. 
+
+锥素缓冲区: 以平面表示的锥素列表, 由前一个计算着色器创建. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#version 310 es
+precision highp float;
+precision highp int;
+
+#define LIGHT_BUFFER_SENTINEL 0x7fffffffu
+#define MAX_FROXEL_LIGHT_COUNT 32u
+
+#define THREADS_PER_FROXEL_X 8u
+#define THREADS_PER_FROXEL_Y 8u
+#define THREADS_PER_FROXEL_Z 1u
+#define THREADS_PER_FROXEL (THREADS_PER_FROXEL_X * \
+        THREADS_PER_FROXEL_Y * THREADS_PER_FROXEL_Z)
+
+layout(local_size_x = THREADS_PER_FROXEL_X,
+       local_size_y = THREADS_PER_FROXEL_Y,
+       local_size_z = THREADS_PER_FROXEL_Z) in;
+
+// x = 点光源, y = 聚光灯
+layout(location = 0) uniform uvec2 totalLightCount;
+layout(location = 1) uniform mat4 viewMatrix;
+
+layout(binding = 0, packed) writeonly restrict buffer LightIndexBuffer {
+    uint index[];
+} lightIndexBuffer;
+
+struct PointLight {
+    vec4 positionFalloff; // x, y, z, falloff
+    vec4 colorIntensity;  // r, g, b, intensity
+    vec4 directionIES;    // dir x, dir y, dir z, IES profile index
+};
+
+layout(binding = 1, std140) readonly restrict buffer PointLightBuffer {
+    PointLight lights[];
+} pointLights;
+
+struct SpotLight {
+    vec4 positionFalloff; // x, y, z, falloff
+    vec4 colorIntensity;  // r, g, b, intensity
+    vec4 directionIES;    // dir x, dir y, dir z, IES profile index
+    vec4 angle;           // angle scale, angle offset, unused, unused
+};
+
+layout(binding = 2, std140) readonly restrict buffer SpotLightBuffer {
+    SpotLight lights[];
+} spotLights;
+
+struct Froxel {
+    // 注意: 平面应存储在 vec4[4] 中, 
+    // 但Adreno着色器编译器有一个bug, 
+    // 可以导致无法在循环内正确地读取数据
+    vec4 plane0;
+    vec4 plane1;
+    vec4 plane2;
+    vec4 plane3;
+    vec2 minMaxZ;
+};
+
+layout(binding = 3, std140) readonly restrict buffer FroxelBuffer {
+    Froxel data[];
+} froxels;
+
+shared uint groupLightCounter;
+shared uint groupLightIndexBuffer[MAX_FROXEL_LIGHT_COUNT];
+
+float signedDistanceFromPlane(vec4 p, vec4 plane) {
+    // plane.w == 0.0, 简化计算
+    return dot(plane.xyz, p.xyz);
+}
+
+void synchronize() {
+    memoryBarrierShared();
+    barrier();
+}
+
+void main() {
+    if (gl_LocalInvocationIndex == 0u) {
+        groupLightCounter = 0u;
+    }
+    memoryBarrierShared();
+
+    uint froxelIndex = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x +
+            gl_WorkGroupID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y;
+    Froxel current = froxels.data[froxelIndex];
+
+    uint offset = gl_LocalInvocationID.x +
+	        gl_LocalInvocationID.y * THREADS_PER_FROXEL_X;
+    for (uint i = 0u; i < totalLightCount.x &&
+		    groupLightCounter < MAX_FROXEL_LIGHT_COUNT &&
+            offset + i < totalLightCount.x; i += THREADS_PER_FROXEL) {
+
+        uint currentLight = offset + i;
+
+        vec4 center = pointLights.lights[currentLight].positionFalloff;
+        center.xyz = (viewMatrix * vec4(center.xyz, 1.0)).xyz;
+        float r = inversesqrt(center.w);
+
+        if (-center.z + r > current.minMaxZ.x &&
+                -center.z - r <= current.minMaxZ.y) {
+            if (signedDistanceFromPlane(center, current.plane0) < r &&
+                signedDistanceFromPlane(center, current.plane1) < r &&
+                signedDistanceFromPlane(center, current.plane2) < r &&
+                signedDistanceFromPlane(center, current.plane3) < r) {
+
+                uint index = atomicAdd(groupLightCounter, 1u);
+                groupLightIndexBuffer[index] = currentLight;
+            }
+        }
+    }
+
+    synchronize();
+
+    uint pointLightCount = groupLightCounter;
+    offset = froxelIndex * MAX_FROXEL_LIGHT_COUNT;
+
+    for (uint i = gl_LocalInvocationIndex; i < pointLightCount;
+            i += THREADS_PER_FROXEL) {
+        lightIndexBuffer.index[offset + i] = groupLightIndexBuffer[i];
+    }
+
+    if (gl_LocalInvocationIndex == 0u) {
+        if (pointLightCount < MAX_FROXEL_LIGHT_COUNT) {
+            lightIndexBuffer.index[offset + pointLightCount] = LIGHT_BUFFER_SENTINEL;
+        }
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[清单 [froxelEvaluation]: 灯光到锥素的GLSL实现(计算着色器)]
+
+# 修订
+
+2018年8月21日: 多重散射
+ - 增加了节[镜面反射的能量损失], 关于如何补偿单重散射BRDF中的能量损失
+
+2018年8月17日: 镜面反射颜色
+ - 增加了节[镜面颜色], 解释如何计算各种金属的基色
+
+2018年8月15日: Fresnel
+ - 在节[Fresnel(镜面F)]增加了对Fresnel效应的说明
+
+2018年8月9日: 光照
+ - 增加了预曝光灯光的说明
+
+2018年8月7日: 布料模型
+ - 增加了对"查理"NDF的说明
+
+2018年8月3日: 第一个公开版本
+
+# 参考文献
+
+[#Ashdown98]: Ian Ashdown. 1998. Parsing the IESNA LM-63 photometric data file. http://lumen.iee.put.poznan.pl/kw/iesna.txt
+
+[#Ashikhmin00]: Michael Ashikhmin, Simon Premoze and Peter Shirley. A Microfacet-based BRDF Generator. *SIGGRAPH '00 Proceedings*, 65-74.
+
+[#Ashikhmin07]: Michael Ashikhmin and Simon Premoze. 2007. Distribution-based BRDFs.
+
+[#Burley12]: Brent Burley. 2012. Physically Based Shading at Disney. *Physically Based Shading in Film and Game Production, ACM SIGGRAPH 2012 Courses*.
+
+[#Estevez17]: Alejandro Conty Estevez and Christopher Kulla. 2017. Production Friendly Microfacet Sheen BRDF. *ACM SIGGRAPH 2017*.
+
+[#Hammon17]: Earl Hammon. 217. PBR Diffuse Lighting for GGX+Smith Microsurfaces. *GDC 2017*.
+
+[#Heitz14]: Eric Heitz. 2014. Understanding the Masking-Shadowing Function
+in Microfacet-Based BRDFs. *Journal of Computer Graphics Techniques*, 3 (2).
+
+[#Heitz16]: Eric Heitz et al. 2016. Multiple-Scattering Microfacet BSDFs with the Smith Model. *ACM SIGGRAPH 2016*.
+
+[#Hill12]: Colin Barré-Brisebois and Stephen Hill. 2012. Blending in Detail. http://blog.selfshadow.com/publications/blending-in-detail/
+
+[#Karis13]: Brian Karis. 2013. Specular BRDF Reference. http://graphicrants.blogspot.com/2013/08/specular-brdf-reference.html
+
+[#Karis14]: Brian Karis. 2014. Physically Based Shading on Mobile. https://www.unrealengine.com/blog/physically-based-shading-on-mobile
+
+[#Kelemen01]: Csaba Kelemen et al. 2001. A Microfacet Based Coupled Specular-Matte BRDF Model with Importance Sampling. *Eurographics Short Presentations*.
+
+[#Krystek85]: M. Krystek. 1985. An algorithm to calculate correlated color temperature. *Color Research & Application*, 10 (1), 38–40.
+
+[#Krivanek08]: Jaroslave Krivànek and Mark Colbert. 2008. Real-time Shading with Filtered Importance Sampling. *Eurographics Symposium on Rendering 2008*, Volume 27, Number 4.
+
+[#Kulla17]: Christopher Kulla and Alejandro Conty. 2017. Revisiting Physically Based Shading at Imageworks. *ACM SIGGRAPH 2017*
+
+[#Lagarde14]: Sébastien Lagarde and Charles de Rousiers. 2014. Moving Frostbite to PBR. *Physically Based Shading in Theory and Practice, ACM SIGGRAPH 2014 Courses*.
+
+[#Lagarde18]: Sébastien Lagarde and Evgenii Golubev. 2018. The road toward unified rendering with Unity’s high definition rendering pipeline. *Advances in Real-Time Rendering in Games, ACM SIGGRAPH 2018 Courses*.
+
+[#Lazarov13]: Dimitar Lazarov. 2013. Physically-Based Shading in Call of Duty: Black Ops. *Physically Based Shading in Theory and Practice, ACM SIGGRAPH 2013 Courses*.
+
+[#McAuley15]: Stephen McAuley. 2015. Rendering the World of Far Cry 4. *GDC 2015*.
+
+[#McGuire10]: Morgan McGuire. 2010. Ambient Occlusion Volumes. *High Performance Graphics*.
+
+[#Narkowicz14]: Krzysztof Narkowicz. 2014. Analytical DFG Term for IBL. https://knarkowicz.wordpress.com/2014/12/27/analytical-dfg-term-for-ibl
+
+[#Neubelt13]: David Neubelt and Matt Pettineo. 2013. Crafting a Next-Gen Material Pipeline for The Order: 1886. *Physically Based Shading in Theory and Practice, ACM SIGGRAPH 2013 Courses*.
+
+[#Oren94]: Michael Oren and Shree K. Nayar. 1994. Generalization of lambert's reflectance model. *SIGGRAPH*, 239–246. ACM.
+
+[#Pattanaik00]: Sumanta Pattanaik00 et al. 2000. Time-Dependent Visual Adaptation
+For Fast Realistic Image Display. *SIGGRAPH '00 Proceedings of the 27th annual conference on Computer graphics and interactive techniques*, 47-54.
+
+[#Ramamoorthi01]: Ravi Ramamoorthi and Pat Hanrahan. 2001. On the relationship between radiance and irradiance: determining the illumination from images of a convex Lambertian object. *Journal of the Optical Society of America*, Volume 18, Number 10, October 2001.
+
+[#Revie12]: Donald Revie. 2012.  Implementing Fur in Deferred Shading. *GPU Pro 2*, Chapter 2.
+
+[#Russell15]: Jeff Russell. 2015. Horizon Occlusion for Normal Mapped Reflections. http://marmosetco.tumblr.com/post/81245981087
+
+[#Schlick94]: Christophe Schlick. 1994. An Inexpensive BRDF Model for Physically-Based Rendering. *Computer Graphics Forum*, 13 (3), 233–246.
+
+[#Walter07]: Bruce Walter et al. 2007. Microfacet Models for Refraction through Rough Surfaces. *Proceedings of the Eurographics Symposium on Rendering*.
+
+<!-- Markdeep: --><style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace; font-size:5px;}</style>
+
+<!--link rel="stylesheet" href="https://casual-effects.com/markdeep/latest/latex.css?"-->
+<script src="../third_party/markdeep/latest/markdeep.js"></script>
+<!--script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script><script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script>

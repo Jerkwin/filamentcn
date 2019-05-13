@@ -24,10 +24,13 @@
 
 # Filament核心文档
 
-[下载构建]()
-[项目设计]()
-[材质概览]()
-[材质参考页]()
+- [下载构建]()
+- 
+- [材质设计](Filament.md.html) [英文版](https://google.github.io/filament/Materials.html)
+- 
+- [材质概览](Materials.md.html) [英文版](https://google.github.io/filament/Materials.html)
+- 
+- [材质参考页](Material Properties.pdf)
 
 # Filament开发文档/示例
 

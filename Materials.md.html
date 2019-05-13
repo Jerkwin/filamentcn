@@ -1,0 +1,1332 @@
+               <meta charset="utf-8">
+
+<style>img { max-width: 100%; }</style>
+
+![](images/filament_logo.png)
+
+# 关于
+
+本文档是[Filament项目](https://github.com/google/filament)的一部分. 要报告本文档中的错误, 请使用[项目问题跟踪器](https://github.com/google/filament/issues). 
+
+## 作者
+
+- [Romain Guy](https://github.com/romainguy), [@romainguy](https://twitter.com/romainguy)
+
+# 概述
+
+Filament是一个基于物理的渲染(PBR)引擎, 用于Android. Filament提供了一个可定制的材质系统, 你可以用它来创建简单材质和复杂材质. 本文档介绍材质支持的所有功能以及如何创建自己的材质. 
+
+## 核心概念
+
+材质: 材质定义了表面的视觉外观. 为完整描述和渲染表面, 材质提供以下信息: 
+    - 材质模型
+    - 一组用户可控制的命名参数
+    - 光栅状态(混合模式, 背面剔除等)
+    - 顶点着色器代码
+    - 片段着色器代码
+
+材质模型: 
+也称 _着色模型_ 或 _光照模型_, 材质模型定义表面的内在特性. 这些特性直接影响光照的计算方式, 从而影响表面的外观. 
+
+材质定义: 
+描述材质所需的所有信息的文本文件. 这是你可以直接编写以创建新材质的文件. 
+
+材质包: 
+在运行时, 从 _材质包_ 中加载材质, 材质包是使用`matc`工具根据材质的定义编译得到的. 材质包含了描述材质所需的所有信息, 以及为目标运行时平台生成的着色器. 这是必要的, 因为不同的平台(Android, macOS, Linux等)使用不同的图形API, 或相似图形API的不同变体(例如OpenGL与OpenGL ES). 
+
+材质实例: 一个材质实例是对材质的引用, 以及对应该材质的不同参数的一组值. 本文档不包括材质实例, 因为可以直接使用Filament代码创建和操控它们. 
+
+# 材质模型
+
+Filament支持以下材质模型:
+- 光亮(或标准) 
+- 次表面 
+- 布料 
+- 无光亮
+
+## 光亮模型
+
+光亮模型是Filament的标准材质模型. 这种基于物理的着色模型是为了提供与其他常用工具和引擎的良好互操作性而设计的, 如 _Unity 5 _, _Unreal Engine 4_, _Substance Designer_ 或 _Marmoset Toolbag_. 
+
+这种材质模型可用于描述大量的非金属表面(_电介质_)或金属表面(_导体_). 
+
+标准模型的材质外观可以使用表[standardProperties]中的参数来控制. 
+
+
+        参数        |      定义
+-----------------------:|:---------------------
+**baseColor 基色**           | 非金属表面的漫反射反照率, 金属表面的镜面反射颜色
+**metallic 金属度**            | 表面看起来是电介质(0.0)还是导体(1.0). 通常作为二进制值(0或1)
+**roughness 粗糙度**         | 表面的感知光滑程度(0.0)或粗糙程度(1.0). 光滑的表面会呈现出清晰的反射
+**reflectance 反射率**       | 垂直入射时电介质表面的Fresnel反射率. 直接控制了反射的强度
+**clearCoat 涂层**           | 透明涂层的强度
+**clearCoatRoughness 涂层粗糙度**  | 透明涂层的感知光滑程度或粗糙程度
+**anisotropy 各向异性度**          | 切线或副切线方向的各向异性程度
+**anisotropyDirection 各向异性方向** | 局部表面方向
+**ambientOcclusion 环境光遮蔽**    | 定义表面点的环境光可及性. 它是每个像素的阴影因子, 介于0.0和1.0 **之间
+**normal 法线**              | 使用 _凹凸贴图_ (_法线贴图_)作为扰动表面的细节法线
+**clearCoatNormal 涂层法线**     | 使用 _凹凸贴图_ (_法线贴图_)作为扰动透明涂层的细节法线
+**emissive 自发光**            | 额外的漫反射反照用于模拟自发光表面(例如霓虹灯等). 此参数主要用于具有泛光通道的HDR管线
+[表 [standardProperties]: 标准模型的参数]
+
+表[standardPropertiesTypes]中给出了每个参数的类型和范围. 
+
+        参数        |   类型   |            范围         |           备注
+-----------------------:|:--------:|:------------------------:|:-------------------------
+**baseColor 基色**           | float4   |  [0..1]                  | 预乘的线性RGB
+**metallic 金属度**            | float    |  [0..1]                  | 应为0或1
+**roughness 粗糙度**           | float    |  [0..1]                  |
+**reflectance 反射率**         | float    |  [0..1]                  | 首选值 > 0.35
+**clearCoat 涂层**           | float    |  [0..1]                  | 应为0或1
+**clearCoatRoughness 涂层粗糙度**  | float    |  [0..1]                  | 重新映射到[0..0.6]
+**anisotropy 各向异性度**          | float    |  [-1..1]                 | 当此值为正时, 各向异性位于切线方向
+**anisotropyDirection 各向异性方向** | float3   |  [0..1]                  | 线性RGB, 编码切线空间中的方向向量
+**ambientOcclusion 环境光遮蔽**    | float    |  [0..1]                  |
+**normal 法线**              | float3   |  [0..1]                  | 线性RGB, 编码切线空间中的方向向量
+**clearCoatNormal 涂层法线**     | float3   |  [0..1]                  | 线性RGB, 编码切线空间中的方向向量
+**emissive 自发光**            | float4   |  rgb=[0..1], a=[-n..n]   | Alpha为是曝光补偿
+[表 [standardPropertiesTypes]: 标准模型参数的范围和类型]
+
+
+!!!注意: 关于线性RGB
+    几种材质模型的参数需要使用RGB颜色指定. Filament材质使用线性空间中的RGB颜色, 你提供的颜色必须使用此空间中的值. 详细信息请参阅线性颜色章节. 
+
+!!!注意: 关于预乘RGB
+    Filament材质所用的颜色使用预乘的alpha. 详细信息请参阅预乘alpha章节. 
+
+### 基色
+
+`基色`属性定义了对象的感知颜色(有时称为反照率). `基色`的效果取决于表面的性质, 由`金属度`属性控制, 金属度的解释将相应的章节. 
+
+非金属(电介质):
+定义表面的漫反射颜色. 如果使用0到255进行编码, 真实世界的值通常处于 $[10..240]$ 范围内, 如果使用0到1进行编码, 则处于 $[0.04..0.94]$ 范围内. 非金属表面基色的几个示例见表[baseColorsDielectrics]. 
+
+    金属  |        sRGB         |  十六进值 |               颜色
+----------:|:-------------------:|:------------:|-------------------------------------------------------
+煤炭Coal       | 0.19, 0.19, 0.19    | #323232     | <div style="background-color: #323232; width: 60px">&nbsp;</div>
+橡胶Rubber     | 0.21, 0.21, 0.21    | #353535     | <div style="background-color: #353535; width: 60px">&nbsp;</div>
+泥Mud        | 0.33, 0.24, 0.19    | #553d31     | <div style="background-color: #875c3c; width: 60px">&nbsp;</div>
+木材Wood       | 0.53, 0.36, 0.24    | #875c3c     | <div style="background-color: #c4c6c6; width: 60px">&nbsp;</div>
+植被Vegetation | 0.48, 0.51, 0.31    | #7b824e     | <div style="background-color: #7b824e; width: 60px">&nbsp;</div>
+砖Brick      | 0.58, 0.49, 0.46    | #947d75     | <div style="background-color: #947d75; width: 60px">&nbsp;</div>
+沙Sand       | 0.69, 0.66, 0.52    | #b1a884     | <div style="background-color: #b1a884; width: 60px">&nbsp;</div>
+混凝土Concrete   | 0.75, 0.75, 0.73    | #c0bfbb     | <div style="background-color: #c0bfbb; width: 60px">&nbsp;</div>
+[表 [baseColorsDielectrics]: 常见非金属的`基色`]
+
+金属(导体):
+定义表面的镜面反射颜色. 如果使用0到255进行编码, 真实世界的值通常处于 $[170..255]$ 范围内, 如果使用0到1进行编码, 则处于 $[0.66..1.0]$ 范围内. 金属表面基色的几个示例见表[baseColorsConductors]. 
+
+    Metal  |        sRGB         |  Hexadecimal |               Color
+----------:|:-------------------:|:------------:|-------------------------------------------------------
+银Silver     | 0.97, 0.96, 0.91    | #f7f4e8     | <div style="background-color: #faf9f5; width: 60px">&nbsp;</div>
+铝Aluminum   | 0.91, 0.92, 0.92    | #e8eaea     | <div style="background-color: #f4f5f5; width: 60px">&nbsp;</div>
+钛Titanium   | 0.76, 0.73, 0.69    | #c1baaf     | <div style="background-color: #cec8c2; width: 60px">&nbsp;</div>
+铁Iron       | 0.77, 0.78, 0.78    | #c4c6c6     | <div style="background-color: #c0bdba; width: 60px">&nbsp;</div>
+铂Platinum   | 0.83, 0.81, 0.78    | #d3cec6     | <div style="background-color: #d6d1c8; width: 60px">&nbsp;</div>
+金Gold       | 1.00, 0.85, 0.57    | #ffd891     | <div style="background-color: #fedc9d; width: 60px">&nbsp;</div>
+黄铜Brass      | 0.98, 0.90, 0.59    | #f9e596     | <div style="background-color: #f4e4ad; width: 60px">&nbsp;</div>
+铜Copper     | 0.97, 0.74, 0.62    | #f7bc9e     | <div style="background-color: #fbd8b8; width: 60px">&nbsp;</div>
+[表 [baseColorsConductors]: 常见金属的`基色`]
+
+### 金属度
+
+`金属度`属性定义表面是金属(_导体_)表面还是非金属(_电介质_)表面. 此属性应用作二进制值, 设置为0或1. 在使用纹理时, 中间的金属度值只用于创建不同类型的表面之间的过渡. 
+
+此属性可以显著改变表面的外观. 非金属表面具有彩色漫反射和无色差镜面反射(反射光不会改变颜色). 金属表面没有任何漫反射和彩色镜面反射(反射光的颜色来自表面颜色, 由`基色`定义).  
+
+`金属度`的效果如图[metallicProperty]所示(点击图片查看大图). 
+
+![图[metallicProperty]: `金属度`从0.0(左)到1.0(右)变化](images/materials/metallic.png)
+
+### 粗糙度
+
+`粗糙度`属性控制表面的感知光滑度. 当`粗糙度`为0时, 表面非常光滑, 光泽度很高. 表面越粗糙, 反射就越"模糊". 在其他引擎和工具中, 此属性常称为 _光泽度_, 它与粗糙度正好相反(`粗糙度 = 1 - 光泽度`). 
+
+### 非金属
+
+`粗糙度`对非金属表面的影响如图[roughnessProperty]所示(点击图片查看大图). 
+
+![图[roughnessProperty]: 电介质的`粗糙度`从0.0(左)到1.0(右)变化](images/materials/dielectric_roughness.png)
+
+### 金属
+
+`粗糙度`对金属表面的影响如图[roughnessConductorProperty]所示(点击图片查看大图). 
+
+![图[roughnessConductorProperty]: 导体的`粗糙度`从0.0(左)到1.0(右)变化](images/materials/conductor_roughness.png)
+
+### 反射率
+
+`反射率`属性只影响非金属表面. 此属性可用于控制镜面反射强度. 其值定义在0和1之间, 代表重新映射后的反射率百分比. 例如, 默认值0.5对应于4％的反射率. 应避免使用低于0.35(反射率2％)的值, 因为现实世界中不存在如此低反射率的材料. 
+
+`反射率`对非金属表面的影响如图[reflectanceProperty]所示(点击图片查看大图). 
+
+![图[reflectanceProperty]: `反射率`从0.0(左)到1.0(右)变化](images/materials/reflectance.png)
+
+图[reflectance]展示了常见值以及它们与映射函数的关系. 
+
+![图[reflectance]: 常见反射率的值](images/diagram_reflectance.png)
+
+表[commonMatReflectance]给出了各类材料可接受的反射率(现实世界中没有材料的值低于2％). 
+
+
+          材料         |    反射率   |   属性值
+--------------------------:|:-----------------|:----------------
+水 Water                      | 2%               | 0.35
+纤维 Fabric                     | 4%到5.6%       | 0.5到0.59
+常见液体 Common liquids             | 2%到4%         | 0.35到0.5
+常见宝石 Common gemstones           | 5%到16%        | 0.56到1.0
+塑料, 玻璃 Plastics, glass            | 4%到5%         | 0.5到0.56
+其他电介质材料 Other dielectric materials | 2%到5%         | 0.35到0.56
+眼睛 Eyes                       | 2.5%             | 0.39
+皮肤 Skin                       | 2.8%             | 0.42
+毛发 Hair                       | 4.6%             | 0.54
+牙齿 Teeth                      | 5.8%             | 0.6
+默认值                           | 4%               | 0.5
+[表 [commonMatReflectance]: 常见材料的反射率]
+
+### 透明涂层
+
+多层材料相当常见, 尤其是基层上有一个薄的半透明层的材料. 现实世界中这类材料的例子包括汽车涂料, 汽水罐, 漆木, 丙烯酸等. 
+
+`涂层`属性可用于描述具有两层的材质. 透明涂层始终是各向同性的电介质. 
+
+![图[clearCoat]: 标准材质模型(左)和透明涂层模型(右)下碳纤维材质的比较](images /material_carbon_fiber.png)
+
+`涂层`属性控制透明涂层的强度. 此属性应视为二进制值, 设置为0或1. 中间的值可用于控制部分表面具有透明涂层和部分表面不具有透明涂层之间的过渡. 
+
+`涂层`对粗糙金属的影响如图[clearCoatProperty]所示(点击图片查看大图). 
+
+![图[clearCoatProperty]: `涂层`从0.0(左)到1.0(右)变化](images/materials/clear_coat.png)
+
+!!!警告
+    透明涂层相当于将镜面计算的成本提高了一倍. 如果不需要透明涂层, 请不要为其属性指定值, 即使0.0也不行. 
+
+### 透明涂层粗糙度
+
+`透明涂层粗糙度`属性类似于`粗糙度`属性, 但仅用于透明涂层. 另外, 由于透明涂层永远不可能是完全粗糙的, 因此0到1之间的值在内部被重新映射到0到0.6之间的实际粗糙度. 
+
+`透明涂层粗糙度`对粗糙金属的影响如图[clearCoatRoughnessProperty]所示(点击图片查看大图). 
+
+![图[clearCoatRoughnessProperty]: `透明涂层粗糙度`从0.0(左)到1.0(右)变化](images/materials/clear_coat_roughness.png)
+
+### 各向异性度
+
+现实世界中的许多材料, 如拉丝金属, 只能使用各向异性模型进行模拟. 通过使用`各向异性度`属性, 可以将材质从默认各向同性模型变为各向异性模型. 
+
+![图[anisotropic]: 各向同性材质(左)和各向异性材质(右)的比较](images/material_anisotropic.png)
+
+`各向异性度`对粗糙金属的影响如图[anisotropyProperty]所示(点击图片查看大图). 
+
+![图[anisotropyProperty]: `各向异性度`从0.0(左)到1.0(右)变化](images/materials/anisotropy.png)
+
+下面的图[anisotropyDir]展示了如何使用正值或负值来控制各向异性高光的方向: 正值对应的各向异性沿切线方向, 负值则沿副切线方向. 
+
+![图[anisotropyDir]: 正值(左)与负值(右)的`各向异性度'](images/screenshot_anisotropy_direction.png)
+
+!!!提示
+    各向异性材质模型比标准材质模型稍贵一些. 如果不需要各向异性, 请不要为其属性指定值(即使是0.0). 
+
+### 各向异性方向
+
+`各向异性方向`属性定义了给定点处表面的方向, 从而控制了镜面高光的形状. 它是具有3个值的向量, 这些值通常来自纹理, 编码了表面的局部方向. 
+
+`各向异性方向`对金属的影响如图[anisotropyDirectionProperty]所示(点击图片查看大图). 
+
+![图[anisotropyDirectionProperty]: 使用方向贴图渲染的各向异性金属](images/screenshot_anisotropy.png)
+
+为得到图[anisotropyDirectionProperty]所示结果, 所用的方向贴图为图[anisotropyDirectionProperty]. 
+
+![图[anisotropyDirectionProperty]: 方向贴图示例](images/screenshot_anisotropy_map.jpg)
+
+### 环境光遮蔽
+
+`环境光遮蔽`属性定义了环境光对表面点的可及程度. 它是每像素的阴影因子, 介于0.0(完全阴影)和1.0(完全照亮)之间. 此属性只影响漫反射间接光照(基于图像的光照), 而不影响平行光, 点光源和聚光灯等直接光源, 也不影响镜面反射光照. 
+
+![图[aoExample]: 不使用(左)和使用漫反射环境光遮蔽(右)的材质比较](images/screenshot_ao.jpg)
+
+### 法线
+
+`法线`属性定义了表面在给定点的法线. 它通常来自 _法线贴图_ 纹理, 可以改变每个像素的属性. 提供的法线位于切线空间中, 这意味着+Z指向表面外部. 
+
+例如, 想象一下, 我们要渲染一块用簇绒皮革覆盖的家具表面. 对几何体进行建模以准确地表示簇绒图案会需要太多三角形, 因此我们将高多边形网格烘焙到法线贴图中. 一旦将基本贴图用于简化的网格, 我们就得到图[normalMapped]中的结果. 
+
+注意, `法线`属性会影响 _基层_, 但不会影响透明涂层. 
+
+![图[normalMapped]: 不使用(左)和使用法线贴图(右)的低多边形网格](images/screenshot_normal_mapping.jpg)
+
+!!!警告
+    使用法线贴图会增加材质模型的运行时成本. 
+
+### 透明涂层法线
+
+`透明涂层法线`属性定义了给定点处透明涂层的法线. 它在其他方面的行为类似于`法线`属性. 
+
+![图[clearCoatNormalMapped]: 具有透明涂层法线贴图和表面法线贴图的材质](images/screenshot_clear_coat_normal.jpg)
+
+!!!警告
+    使用透明涂层法线贴图会增加材质模型的运行时成本. 
+
+### 自发光
+
+`自发光`属性可用于模拟表面发出的额外光. 它被定义为一个`float4`值, 包含一个RGB颜色(线性空间)以及一个曝光补偿值(alpha通道). 
+
+即使曝光值实际上表示了相机设置的组合, 但摄影师经常使用它来描述光强度. 这就是为什么相机允许摄影师对曝光过度或曝光不足进行曝光补偿的原因. 这一设置可用于艺术控制, 但也可用于实现适当曝光(例如, 将雪的曝光设置为18％中间灰). 
+
+自发光属性的曝光补偿值可用于强制发光颜色比当前曝光更亮(正值)或更暗(负值). 如果启用了泛光效果, 那么使用正曝光补偿可以强制表面泛光. 
+
+## 次表面模型
+
+### 厚度
+
+### 次表面颜色
+
+### 次表面强度
+
+## 布料模型
+
+前面描述的所有材质模型都是设计用于在宏观和微观层面上模拟致密表面的. 然而, 衣服和织物通常由松散连接的线制成, 这些线可以吸收和散射入射光. 与坚硬的表面相比, 布料的特点是镜面波瓣更加柔和, 具有较大的衰减, 以及由前向/后向散射引起的模糊光照. 有些织物还会呈现出双色调镜面反射颜色(例如天鹅绒). 
+
+图[materialCloth]展示了标准材质模型是如何无法描述牛仔面料样品外观的. 表面看起来很僵硬(几乎像塑料一样), 更像是一块油布而不是一件衣服. 该图还显示了由吸收和散射引起的较软的镜面波瓣对于忠实再现织物的重要性. 
+
+![图[materialCloth]: 牛仔面料渲染的比较, 使用了标准模型(左)和布料模型(右)](images/screenshot_cloth.png)
+
+天鹅绒是布料材质模型的一个有趣用例. 如图[materialVelvet]所示, 由于前向散射和后向散射, 这类织物表现出强烈的边缘照明. 这些散射事件是由直立在织物表面的纤维引起的. 当入射光与视线方向相反时, 纤维会向前散射光. 同样, 当入射光与视线方向相同时, 纤维会向后散射光. 
+
+![图[materialVelvet]: 表现出前向和后向散射的天鹅绒面料](images/screenshot_cloth_velvet.png)
+
+值得注意的是, 对有些类型的织物, 使用硬表面材质模型仍然是最好的. 例如, 皮革, 丝绸和缎子都可以使用标准或各向异性材质模型重新创建. 
+
+除 _金属度_ 和 _反射率_ 参数外, 布料材质模型包含了先前为标准材质模型定义的所有参数. 表[clothProperties]中给出了可以使用的两个额外的参数. 
+
+
+       参数      |      定义
+---------------------:|:---------------------
+**SheenColor 光泽颜色**        | 用于创建双色调镜面反射织物的高光色调(默认值为 $\sqrt{baseColor}$)
+**SubsurfaceColor 次表面颜色**   | 经材料散射和吸收后的漫反射颜色
+[表 [clothProperties]: 布料模型参数]
+
+表[clothPropertiesTypes]中给出了每个参数的类型和范围. 
+
+       属性       |   类型   |            范围         |           备注
+---------------------:|:--------:|:------------------------:|:-------------------------
+**sheenColor 光泽颜色**        | float3   |  [0..1]                  | 线性RGB
+**subsurfaceColor 次表面颜色**   | float3   |  [0..1]                  | 线性RGB
+[表 [clothPropertiesTypes]: 布料模型属性的范围和类型]
+
+要创建类似天鹅绒的材质, 可以将基色设置为黑色(或深色). 
+并将光泽颜色设置为所需的色度信息. 要创建更常见的面料, 如牛仔布, 棉布等, 请使用基色作为色度, 并使用默认的光泽颜色或将光泽颜色设置为基色的亮度。
+
+!!!警告
+    布料材质模型比标准材质模型更昂贵. 
+
+!!!提示
+    要看到`粗糙度`参数的效果, 请确保`光泽颜色`比`基色`更亮. 这可用于创建模糊效果. 将`基色`的亮度作为`光泽颜色`会产生相当自然的效果, 适用于常见布料. 深色的`基色`与明亮/饱和的`光泽颜色`相结合可用于创建天鹅绒. 
+
+!!!提示
+    应该小心地使用`次表面颜色`参数. 较高的值可能会干扰某些区域中的阴影. 它最适合创建通过的材质微妙透射效果. 
+
+### 光泽颜色
+
+`光泽颜色`属性可用于直接修改镜面反射. 它可以更好地控制布料的外观, 并可以创建双色调镜面反射材质. 
+
+`光泽颜色`的效果如图[materialClothSheen]所示(点击图片查看大图). 
+
+![图[materialClothSheen]: 不使用光泽(左)和(右)使用光泽的蓝色面料](images/screenshot_cloth_sheen.png)
+
+### 次表面颜色
+
+`次表面颜色`属性并不是基于物理的, 可用于模拟特定类型织物中光的散射, 部分吸收和再发射. 它特别适用于创建更柔软的织物. 
+
+!!!警告
+    当使用`次表面颜色`属性时, 布料模型的计算成本更高. 
+
+`次表面颜色`的效果如图[materialClothSubsurface]所示(点击图片查看大图). 
+
+![图[materialClothSubsurface]: 白布(左列)与具有棕色次表面散射的白布(右)](images/screenshot_cloth_subsurface.png)
+
+## 未照亮模型
+
+未照明材质模型可用于禁用所有光照计算. 它的主要用途是渲染预亮的元素, 如立方体贴图, 外部内容(如视频或相机流), 用户界面, 可视化/调试等. 未照亮模型只有两个属性, 如表[unlitProperties]所示. 
+
+       属性       |      定义
+---------------------:|:---------------------
+**baseColor 基色**         | 表面的漫反射颜色
+**emissive 自发光**          | 额外的漫反射颜色, 用于模拟自发光表面. 此属性主要用于具有泛光通道的HDR管线
+[表[unlitProperties]: 标准模型的属性]
+
+表[unlitPropertiesTypes]中给出了每个参数的类型和范围. 
+
+       属性       |   类型   |            范围         |           备注
+---------------------:|:--------:|:------------------------:|:-------------------------
+**baseColor 基色**         | float4   |  [0..1]                  | 预乘线性RGB
+**emissive 自发光**          | float4   |  rgb=[0..1], a=N/A       | 预乘线性RGB, 忽略alpha
+[表 [unlitPropertiesTypes]: 未照亮模型属性的范围和类型]
+
+如果存在, `自发光`的值会简单地加到`基色`中. `自发光`的主要用途是, 如果HDR管线配置了泛光通道, 自发光会强制未照亮的表面出现泛光效果. 
+
+图[materialUnlit]展示了未照亮材质模型的示例(点击图片查看大图). 
+
+![图[materialUnlit]: 未照亮模型用于渲染调试信息](images/screenshot_unlit.jpg)
+
+# 材质定义
+
+一个材质定义是描述材质所需的所有信息的一个文本文件: 
+
+- 名称 
+- 用户参数 
+- 材质模型 
+- 必需属性 
+- 插值(称为 _变量_) 
+- 光栅状态(混合模式等) 
+- 着色器代码(片段着色器, 可选的顶点着色器)
+
+## 格式
+
+材质定义的格式是一种松散地基于[JSON](https://www.json.org/)的格式, 我们称之为 _JSONish_. 在顶层, 材质定义由3个不同的块组成, 这些块使用JSON对象表示方法: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    // 材质属性
+}
+
+vertex {
+    // 顶点着色器, 可选
+}
+
+fragment {
+    // 片段着色器
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+最小的可用材质定义必须包含`material`部分和`fragment`块. `vertex`块是可选的. 
+
+### 与JSON的区别
+
+在JSON中, 对象由键/值 _对_ 组成. JSON对具有以下语法: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+"key" : value
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+其中`value`可以是字符串, 数字, 对象, 数组或文字(`true`, `false`或`null`). 虽然此语法在材质定义中完全有效, 但JSONish也接受不带引号的字符串: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+key : value
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+当字符串包含空格时, 引号仍然是必需的. 
+
+`vertex`和`fragment`块包含未转义的, 未加引号的GLSL代码, 这些在JSON中是无效的. 
+
+允许使用单行C++风格的注释. 
+
+键值对的键区分大小写. 
+
+键值对的值则不区分大小写. 
+
+### 示例
+
+以下代码清单给出了一个有效材质定义的示例. 此定义使用 _照亮_ 材质模型(见Lit模型部分), 使用默认的不透明混合模式, 需要渲染网格中存在一组UV坐标, 并定义3个用户参数. 本文档接下来的部分会详细说明`material`和`fragment`块. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    name : "Textured material",
+    parameters : [
+        {
+           type : sampler2d,
+           name : texture
+        },
+        {
+           type : float,
+           name : metallic
+        },
+        {
+            type : float,
+            name : roughness
+        }
+    ],
+    requires : [
+        uv0
+    ],
+    shadingModel : lit,
+    blending : opaque
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = texture(materialParams_texture, getUV0());
+        material.metallic = materialParams.metallic;
+        material.roughness = materialParams.roughness;
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+## `Material`块
+
+材质块是必需的, 其中包含用于描述所有非着色器数据的属性对列表. 
+
+### `name`
+
+类型
+:    `字符串`
+
+值
+:     任意字符串. 如果`name`包含空格, 则需要双引号. 
+
+说明
+: 设置材质的名称. 运行时会保留`nme`, 以供调试. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    name : stone
+}
+
+material {
+    name : "Wet pavement"
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### shadingModel
+
+类型
+:    `字符串`
+
+值
+:     `lit`, `subsurface`, `cloth`, `unlit`中的任意一个. 默认为`lit`. 
+
+说明
+:     按照 材质模型 章节中的说明选择材质模型. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    shadingModel : unlit
+}
+
+material {
+    shadingModel : "subsurface"
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### parameters
+
+类型
+:    参数对象数组
+
+值
+:     每一条目都是一个具有属性`name`和`type`的对象, 这两个属性都是`string`类型. `name`必须是有效的GLSL标识符. `type`必须是表[materialParamsTypes]中给出的类型之一. 
+
+         类型          |            说明
+:----------------------|:---------------------------------
+bool                   | 单个布尔值
+bool2                  | 2个布尔值的向量
+bool3                  | 3个布尔值的向量
+bool4                  | 4个布尔值的向量
+float                  | 单个浮点值
+float2                 | 2个浮点值的向量
+float3                 | 3个浮点值的向量
+float4                 | 4个浮点值的向量
+int                    | 单个整数值
+int2                   | 2个整数值的向量
+int3                   | 3个整数值的向量
+int4                   | 4个整数值的向量
+uint                   | 单个无符号整数
+uint2                  | 2个无符号整数的向量
+uint3                  | 3个无符号整数的向量
+uint4                  | 4个无符号整数的向量
+float3x3               | 3x3 浮点数矩阵
+float4x4               | 4x4 浮点数矩阵
+sampler2d              | 2D纹理
+samplerExternal        | 外部纹理(特定平台)
+samplerCubemap         | 立方体贴图纹理
+[表 [materialParamsTypes]: 材质参数类型]
+
+Samplers
+:     采样器类型也可以指定`format`(默认为`float`)和`precision` (默认为`default`). 格式可以是`int`, `float`之一. 精度可以是`default`(平台的最高精度, 通常桌面端为`high`, 移动设备为`medium`), `low`, `medium`, `high`. 
+
+Arrays
+: 可以通过在参数的类型名称后附加`[size]`来定义值的数组, 其中`size`为一个正整数. 例如: `float[9]`声明了一个包含9个`float`值的数组. 目前不支持采样器数组. 
+
+说明
+: 列出材质所需的参数. 使用Filament的材质API在运行时可以设置这些参数. 着色器访问参数的方式取决于参数的类型: 
+
+    - **Samplers types**: 使用前缀为`materialParams_` 的参数名称. 例如, `materialParams_myTexture`. 
+    - **其他类型**: 使用参数名称作为名为`materialParams`的结构的字段. 例如, `materialParams.myColor`. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    parameters : [
+        {
+           type : float4,
+           name : albedo
+        },
+        {
+           type      : sampler2d,
+           format    : float,
+           precision : high,
+           name      : roughness
+        },
+        {
+            type : float2,
+            name : metallicReflectance
+        }
+    ],
+    requires : [
+        uv0
+    ],
+    shadingModel : lit,
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = materialParams.albedo;
+        material.roughness = texture(materialParams_roughness, getUV0());
+        material.metallic = materialParams.metallicReflectance.x;
+        material.reflectance = materialParams.metallicReflectance.y;
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+### requires
+
+类型
+:    `string`数组
+
+值
+:     每个条目必须是`uv0`, `uv1`, `color`, `position`, `tangents`之一.
+
+说明
+: 列出材质所需的顶点属性. `position`属性始终是必需的, 不需要指定. 选择任何非`unlit`着色模型时, 会自动需要`tangents`属性. 关于如何从着色器访问这些属性的详细信息, 请参阅本文档的着色器部分. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    parameters : [
+        {
+           type : sampler2d,
+           name : texture
+        },
+    ],
+    requires : [
+        uv0
+    ],
+    shadingModel : lit,
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = texture(materialParams_texture, getUV0());
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### variables
+
+类型
+:    `string`数组
+
+值
+:     最多4个字符串, 每个字符串必须是有效的GLSL标识. 
+
+说明
+:     材质顶点着色器输出的自定义插值(或变量).       数组的每一条目都定义了一个插值的名称. 片段着色器中的全名是带`variable_`前缀的插值的名称. 例如, 如果声明一个名为`eyeDirection`的变量, 那么在片段着色器中可以使用`variable_eyeDirection`访问它. 在顶点着色器中, 插值名称只是`MaterialVertexInputs`结构的成员(在前面的示例中结构为`material.eyeDirection`). 每个插值在着色器中都是`float4`(`vec4`)类型. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    name : Skybox,
+    parameters : [
+        {
+           type : samplerCubemap,
+           name : skybox
+        }
+    ],
+    variables : [
+         eyeDirection
+    ],
+    vertexDomain : device,
+    depthWrite : false,
+    shadingModel : unlit
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        float3 sky = texture(materialParams_skybox, variable_eyeDirection.xyz).rgb;
+        material.baseColor = vec4(sky, 1.0);
+    }
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        float3 p = getPosition().xyz;
+        float3 u = mulMat4x4Float3(getViewFromClipMatrix(), p).xyz;
+        material.eyeDirection.xyz = mulMat3x3Float3(getWorldFromViewMatrix(), u);
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### blending
+
+类型
+:    `字符串`
+
+值
+:     `opaque`, `transparent`, `fade`, `add`, `masked`之一. 默认为`opaque`. 
+
+说明
+: 定义渲染对象如何/是否与渲染目标的内容进行混合. 可能的混合模式包括: 
+
+    - **Opaque**: 禁用混合, 忽略材质输出的alpha通道. 
+    - **Transparent**: 启用混合. 材质的输出会渲染目标进行alpha合成, 使用Porter-Duff的`source over`规则. 这种混合模式假定alpha是预乘的. - **Fade**: 作用类似`transparent`, 但透明度也用于镜面光照. 在`transparent`模式下, 材质的alpha值仅用于漫反射光照. 这种混合模式对于淡入和淡出光照的对象很有用. - **Add**: 启用混合. 材质的输出会添加到渲染目标的内容中. 
+    - **Masked**: 禁用混合. 这种混合模式启用alpha遮蔽. 材质输出的alpha通道定义了是否丢弃片段. 更多信息参阅maskThreshold部分. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    blending : transparent
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### vertexDomain
+
+类型
+:    `字符串`
+
+值
+:     `object`, `world`, `view`, `device`之一. 默认为`object`. 
+
+说明
+: 定义渲染网格的域(或坐标空间). 域会影响顶点着色器中顶点的变换方式. 可能的域包括: 
+
+     - **Object**: 顶点在对象(或模型)坐标空间中定义. 使用渲染对象的变换矩阵变换顶点
+     - ** World**: 顶点在世界坐标空间中定义. 不使用渲染对象的变换来变换顶点. 
+     - **View**: 顶点在视图(或眼睛或相机)坐标空间中定义. 不使用渲染对象的变换来变换顶点. 
+     - **Device**: 顶点在规范化设备(或剪辑)坐标空间中定义. 不使用渲染对象的变换来变换顶点. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    vertexDomain : device
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### interpolation
+
+类型
+:    `字符串`
+
+值
+:     `smooth`, `flat`之一. 默认为`smooth`. 
+
+说明
+: 定义如何在顶点之间对插值量(或变量)进行插值. 当此属性设置为`smooth`时, 会对每个插值量进行透视正确的插值. 当设置为`flat`时, 不会进行插值, 给定三角形内的所有片段都以相同的着色显示. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    interpolation : flat
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### culling
+
+类型
+:    `字符串`
+
+值
+:     `none`, `front`, `back`, `frontAndBack`之一. 默认为`back`. 
+
+说明
+: 定义应剔除哪些三角形: 无, 前向三角形, 后向三角形或全部. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    culling : none
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### colorWrite
+
+类型
+:    `boolean`
+
+值
+: `true`或`false`. 默认为`true`. 
+
+说明
+: 启用或禁用对颜色缓冲区的写入. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    colorWrite : false
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### depthWrite
+
+类型
+:    `boolean`
+
+值
+: `true`或`false`. 默认为`true`. 
+
+说明
+: 启用或禁用对深度缓冲区的写入. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    depthWrite : false
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### depthCulling
+
+类型
+:    `boolean`
+
+值
+: `true`或`false`. 默认为`true`. 
+
+说明
+: 启用或禁用深度测试. 禁用深度测试时, 使用此材质渲染的对象将始终处于其他不透明对象的上层. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    depthCulling : false
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### doubleSided
+
+类型
+:    `boolean`
+
+值
+: `true`或`false`. 默认为`false`. 
+
+说明
+: 启用或禁用双面渲染. 设置为`true`时, `culling`会自动设置为`none`; 如果三角形是后向的, 其法线会自动翻转为前向. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    doubleSided : true
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### transparency
+
+类型
+:    `字符串`
+
+值
+:     `default`, `twoPassesOneSide`, `twoPassesTwoSides`之一. 默认为`default`. 
+
+说明
+: 控制透明对象的渲染方式. 只有当`blending`模式不是`opaque`时, 此选项才有效. 这些方法都不能准确地渲染凹面几何体, 但实践中它们通常足够好. 
+
+三种可能的透明模式为:  
+- `default`: 透明对象正常渲染(如图[transparencyDefault]所示), 遵循`culling`模式等 
+- `twoPassesOneSide`: 透明对象首先在深度缓冲区中渲染, 然后再在颜色缓冲区中渲染, 遵循`cullling`模式. 这实际上只相当于渲染了透明对象的一半, 如图[transparencyTwoPassesOneSide]所示. 
+- `twoPassesTwoSides`: 透明对象在颜色缓冲区中渲染两次: 首先是背面, 然后是正面. 使用这种模式可以渲染两组面, 同时也可以减少或消除排序问题, 如图[transparencyTwoPassesTwoSides]所示. `twoPassesTwoSides`可以与`doubleSided`结合使用以获得更好的效果. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    transparency : twoPassesOneSide
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+![图[transparencyDefault]: 这个双面模型展示了`default`模式下透明对象可能遇到的排序问题](images/screenshot_transparency_default.png)
+
+![图[transparencyTwoPassesOneSide]: 在`twoPassesOneSide`模式下, 只有一组面可见且排序正确](images/screenshot_twopasses_oneside.png)
+
+![图[transparencyTwoPassesTwoSides]: 在`twoPassesTwoSides`模式下, 两组面都可见, 排序问题也被最小化或消除](images/screenshot_twopasses_twosides.png)
+
+### maskThreshold
+
+类型
+:    `number`
+
+值
+: 介于`0.0和`1.0`之间的值. 默认为`0.4`. 
+
+说明
+: 当`blend`模式设置为`masked`时, 必须保留的片段所具有的最小alpha值. 当混合模式不是`masked`时, 忽略此值. 此值可用于控制alpha遮蔽对象的外观. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    blending : masked,
+    maskThreshold : 0.5
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### shadowMultiplier
+
+类型
+:    `boolean`
+
+值
+: `true`或`false`. 默认为`false`. 
+
+说明
+: 只用于`unlit`着色模型. 如果启用此属性, 材质计算的最终颜色会乘以阴影因子(或可见度). 这样可以创建透明的可接收阴影的对象(例如, AR中的不可见的地平面). 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    name : "Invisible shadow plane",
+    shadingModel : unlit,
+    shadowMultiplier : true,
+    blending : transparent
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        // baseColor定义最终阴影的颜色和不透明度
+        material.baseColor = vec4(0.0, 0.0, 0.0, 0.7);
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### curvatureToRoughness
+
+类型
+:    `boolean`
+
+值
+: `true`或`false`. 默认为`false`. 
+
+说明
+: 通过增加基于局部几何曲率的粗糙度来减少镜面反射锯齿. 如果只使用MSAA, 此属性特别有效. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    curvatureToRoughness : true
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+![图[curvatureToRoughness]: 通常(左)和'curvatureToRoughness`(右)渲染的封闭光滑金属表面. ](images/screenshot_curvature_to_roughness.png)
+
+### limitOverInterpolation
+
+类型
+:    `boolean`
+
+值
+: `true`或`false`. 默认为`false`. 
+
+说明
+: 通过尝试消除法线过插值来减少镜面反射锯齿. 启用此属性后, 如果插值法线过长, 材质会切换到质心法线插值方法. 只有使用MSAA抗锯齿方法时才能使用此属性. 效果比`curvatureToRoughness`更加微妙, 应该首先使用后者来消除镜面反射锯齿. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    limitOverInterpolation : true
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### variantFilter
+
+类型
+:    `string`数组
+
+值
+:     每个条目必须是`dynamicLighting`, `directionalLighting`, `shadowReceiver`, `skinning`之一.
+
+说明
+: 用于指定着色器变体的列表, 应用程序永远不会需要这些着色器变体. 在代码生成阶段会跳过这些着色器变体, 从而减小了材质的整体大小. 请注意, 某些变体可能会被自动过滤掉. 例如, 在编译`unlit`材质时, 所有与光照相关的变体(`directionalLighting`等)都会被过滤掉. 请谨慎使用变体过滤器, 过滤掉运行时所需的变体可能会导致崩溃. 
+
+变体说明:  
+- `directionalLighting`, 当场景中存在平行光时使用 
+- `dynamicLighting`, 当场景中存在非平行光(点光源, 聚光灯等)时使用 
+- `shadowReceiver`, 当一个对象可以接收阴影时使用 
+- `skinning`, 当使用GPU蒙皮设置对象动画时使用
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    name : "Invisible shadow plane",
+    shadingModel : unlit,
+    shadowMultiplier : true,
+    blending : transparent,
+    variantFilter : [ skinning ]
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### flipUV
+
+类型
+:    `boolean`
+
+值
+: `true`或`false`. 默认为`true`. 
+
+说明
+: 如果设置为`true`(默认值), 该材质的顶点着色器读取时, 会将UV属性的Y坐标进行翻转 . 翻转相当于`y = 1.0 - y`. 如果设置为`false`, 会禁用翻转, 按原样读取UV属性. 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ JSON
+material {
+    flipUV : false
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+## `Vertex`块
+
+顶点块是可选的, 用于控制材质的顶点着色阶段. 
+顶点块必须包含有效的[ESSL 3.0](https://www.khronos.org/registry/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf)代码(OpenGL ES 3.0中支持的GLSL版本). 你可以在顶点块内随意创建多个函数, 但 **必须** 声明`materialVertex`函数: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        // 顶点着色代码
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+在运行时着色系统会自动调用此函数, 这样你能够使用`MaterialVertexInputs`结构读取和修改材质属性. 结构的完整定义可以在 材质顶点输入 部分找到. 
+
+你可以使用此结构来计算自定义的变量/插值量或修改属性的值. 例如, 以下顶点块会随时间的推移同时修改顶点的颜色和UV坐标: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+material {
+    requires : [uv0, color]
+}
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        material.color *= sin(getTime());
+        material.uv0 *= sin(getTime());
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+除`MaterialVertexInputs`结构外, 顶点着色代码还可以使用 着色器公共API 部分中列出的所有公共API. 
+
+### 材质顶点输入
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+struct MaterialVertexInputs {
+    float4 color;         // 如果需要 color 属性
+    float2 uv0;           // 如果需要 uv0 属性
+    float2 uv1;           // 如果需要 uv1 属性
+    float3 worldNormal;   // 只用于 unlit 着色模型
+    float4 worldPosition; // 始终可用
+    // 变量* 名称会替换为实际名称
+    float4 variable0;     // 如果定义了1个或多个变量
+    float4 variable1;     // 如果定义了2个或多个变量
+    float4 variable2;     // 如果定义了3个或多个变量
+    float4 variable3;     // 如果定义了4个或多个变量
+};
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+!!!提示: UV属性
+    默认情况下, 材质的顶点着色器会翻转当前网格的UV属性的Y坐标: `material.uv0 = vec2(mesh_uv0.x, 1.0 - mesh_uv0.y)`. 你可以使用`flipUV`属性并将其设置为`false`来控制此行为. 
+
+## 片段块
+
+必须使用片段块来控制材质的片段着色阶段. 顶点块必须包含有效的[ESSL 3.0](https://www.khronos.org/registry/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf)代码(OpenGL ES 3.0中支持的GLSL版本). 你可以在顶点块内随意创建多个函数, 但 **必须** 声明`material`函数: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        // 片段着色代码
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+在运行时着色系统会自动调用此函数, 这样你能够使用`MaterialInputs`结构读取和修改材质属性. 结构的完整定义可以在 材质片段输入 部分找到. 结构的完整定义可以在 材质模型 部分找到. 
+
+`material()`函数的目标是计算特定于所选着色模型的材质属性. 例如, 以下片段块使用标准照亮模型创建了一个光泽的红色金属: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor.rgb = vec3(1.0, 0.0, 0.0);
+        material.metallic = 1.0;
+        material.roughness = 0.0;
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### prepareMaterial函数
+
+请注意, 退出`material()`函数之前必须调用`prepareMaterial(material)`. 这个`prepareMaterial`函数设置了材质模型的内部状态. 片段API部分中描述的一些API, 如`shading_normal`, 只能在调用`prepareMaterial()` _之后_ 才能访问. 
+
+同样重要的是记住, `normal`属性, 如 材质片段输入 部分所述, 只有在调用`prepareMaterial()` _之前_ 修改才有效果. 以下是一个片段着色器的示例, 它正确地修改了`normal`属性, 以实现具有凹凸贴图的光泽红色塑料: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+fragment {
+    void material(inout MaterialInputs material) {
+        // 获取切线空间中的法线
+        vec3 normal = texture(materialParams_normalMap, getUV0()).xyz;
+        material.normal = normal * 2.0 - 1.0;
+
+        // 准备材质
+        prepareMaterial(material);
+
+        // 从现在开始, 可以访问shading_normal等
+        material.baseColor.rgb = vec3(1.0, 0.0, 0.0);
+        -=YTET -伊甸园字幕组=- 翻译:
+material.metallic = 0.0;
+        材质粗糙度=1.0; 
+material.roughness = 1.0;
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### 材质片段输入
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+struct MaterialInputs {
+    float4 baseColor;           // 默认: float4(1.0)
+    float4 emissive;            // 默认: float4(0.0)
+
+    // 对于unlit着色模型, 没有其他字段可用
+    float  roughness;           // 默认: 1.0
+    float  metallic;            // 默认: 0.0, 不适用于布料
+    float  reflectance;         // 默认: 0.5, 不适用于布料
+    float  ambientOcclusion;    // 默认: 0.0
+
+    // 当着色模型为次表面或Cloth时不可用
+    float  clearCoat;           // 默认: 1.0
+    float  clearCoatRoughness;  // 默认: 0.0
+    float3 clearCoatNormal;     // 默认: float3(0.0, 0.0, 1.0)
+    float  anisotropy;          // 默认: 0.0
+    float3 anisotropyDirection; // 默认: float3(1.0, 0.0, 0.0)
+
+    // 只有当着色模型为次表面时才可用
+    float  thickness;           // 默认: 0.5
+    float  subsurfacePower;     // 默认: 12.234
+    float3 subsurfaceColor;     // 默认: float3(1.0)
+
+    // 只有当着色模型为布料时才可用
+    float3 sheenColor;         // 默认: sqrt(baseColor)
+    float3 subsurfaceColor;    // 默认: float3(0.0)
+
+    // 当着色模型为unlit时不可用
+    // 必须在调用prepareMaterial()之前设置
+    float3 normal;             // 默认: float3(0.0, 0.0, 1.0)
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+## 着色器公共API
+
+### 类型
+
+虽然可以直接使用GLSL类型(`vec4`或`mat4`), 但我们建议使用以下类型别名: 
+
+               名称              |   GLSL类型  |            说明
+:--------------------------------|:------------:|:------------------------------------
+**bool2**                        | bvec2        |  2个布尔值的向量
+**bool3**                        | bvec3        |  3个布尔值的向量
+**bool4**                        | bvec4        |  4个布尔值的向量
+**int2**                         | ivec2        |  2个整数值的向量
+**int3**                         | ivec3        |  3个整数值的向量
+**int4**                         | ivec4        |  4个整数值的向量
+**uint2**                        | uvec2        |  2个无符号整数的向量
+**uint3**                        | uvec3        |  3个无符号整数的向量
+**uint4**                        | uvec4        |  4个无符号整数的向量
+**float2**                       | float2       |  2个浮点值的向量
+**float3**                       | float3       |  3个浮点值的向量
+**float4**                       | float4       |  4个浮点值的向量
+**float4x4**                     | mat4         |  4x4 浮点数矩阵
+**float3x3**                     | mat3         |  3x3 浮点数矩阵
+
+### 数学
+                   名称                   |   类型   |            说明
+:-----------------------------------------|:--------:|:------------------------------------
+**PI**                                    | float    |  常数 $\pi$
+**HALF_PI**                               | float    |  常数 $\frac{\pi}{2}$
+**saturate(float x)**                     | float    |  将指定值限定在0.0和1.0之间
+**pow5(float x)**                         | float    |  计算 $x^5$
+**sq(float x)**                           | float    |  计算 $x^2$
+**max3(float3 v)**                        | float    |  返回指定`float3`的最大值
+**mulMat4x4Float3(float4x4 m, float3 v)** | float4   |  返回 $m * v$
+**mulMat3x3Float3(float4x4 m, float3 v)** | float4   |  返回 $m * v$
+
+### 矩阵
+
+                 名称               |   类型   |            说明
+:-----------------------------------|:--------:|:------------------------------------
+**getViewFromWorldMatrix()**        | float4x4 |  从世界空间转换为视图/眼睛空间的矩阵
+**getWorldFromViewMatrix()**        | float4x4 |  从视图/眼睛空间转换为世界空间的矩阵
+**getClipFromViewMatrix()**         | float4x4 |  从视图/眼睛空间转换为剪辑(NDC)空间的矩阵
+**getViewFromClipMatrix()**         | float4x4 |  从剪辑(NDC)空间转换为视图/眼睛空间的矩阵
+**getClipFromWorldMatrix()**        | float4x4 |  从世界空间转换为剪辑(NDC)空间的矩阵
+**getWorldFromClipMatrix()**        | float4x4 |  从剪辑(NDC)空间转换为世界空间的矩阵
+
+### 帧常数
+
+                 名称               |   类型   |            说明
+:-----------------------------------|:--------:|:------------------------------------
+**getResolution()**                 | float4   |  以像素为单位的视图分辨率: `width`, `height`, `1 / width`, `1 / height`
+**getWorldCameraPosition()**        | float3   |  相机/眼睛在世界空间中的位置
+**getTime()**                       | float    |  以秒为单位的当前时间, 可以定期重置以避免精度损失
+**getUserTime()**                   | float4   |  以秒为单位的当前时间: `time`, `(double)time - time`, `0`, `0`
+**getUserTimeMode(float m)**        | float    |  当前时间对于m的余数, 以秒为单位
+**getExposure()**                   | float    |  相机的光度曝光
+**getEV100()**                      | float    |  [ISO 100的曝光值](https://en.wikipedia.org/wiki/Exposure_value) of the camera
+
+### 仅限于顶点
+
+以下API只能在顶点块中使用: 
+
+                 名称               |   类型   |            说明
+:-----------------------------------|:--------:|:------------------------------------
+**getPosition()**                   | float4   |  由材质定义的域中的顶点位置(默认: 对象/模型空间)
+**getWorldFromModelMatrix()**       | float4x4 |  从模型(对象)空间转换为世界空间的矩阵
+**getWorldFromModelNormalMatrix()** | float3x3 |  将法线从模型(对象)空间转换为世界空间的矩阵
+
+### 仅限于片段
+
+以下API只能在片段块中使用: 
+
+               名称              |   类型   |            说明
+:--------------------------------|:--------:|:------------------------------------
+**getWorldTangentFrame()**       | float3x3 |  矩阵, 每一列包含了世界空间中顶点的`tangent` (`frame[0]`), `bi-tangent` (`frame[1]`)和`normal` (`frame[2]`). 如果材质不计算凹凸贴图的切线空间法线, 或者阴影不是各向异性的, 那么此矩阵中只有`normal`有效. 
+**getWorldPosition()**           | float3   |  片段在世界空间中的位置
+**getWorldViewVector()**         | float3   |  世界空间中从片段位置到眼睛的归一化向量
+**getWorldNormalVector()**       | float3   |  凹凸贴图后的世界空间中的归一化法线(必须在`prepareMaterial()`之后使用)
+**getWorldReflectedVector()**    | float3   |  视线向量关于法线的反射(必须在`prepareMaterial()`之后使用)
+**getNdotV()**                   | float    |  `dot(normal, view)`的结果, 始终严格大于0 (必须在`prepareMaterial()`之后使用)
+**getColor()**                   | float4   |  片段的插值颜色, 如果需要颜色属性
+**getUV0()**                     | float2   |  UV坐标的第一个插值集合, 如果需要uv0属性
+**getUV1()**                     | float2   |   UV坐标的第一个插值集合, 如果需要uv1属性
+**inverseTonemap(float3)**       | float3   |  将逆色调映射运算用于指定的线性sRGB颜色, 并返回线性sRGB颜色. 此运算可以采用近似
+**inverseTonemapSRGB(float3)**   | float3   |  将逆色调映射运算用于指定的非线性sRGB颜色, 并返回线性sRGB颜色. 此运算可以采用近似
+**luminance(float3)**            | float    |  计算指定线性sRGB颜色的亮度
+
+# 编译材质
+
+可以使用名为`matc`的命令行工具从材质定义编译材质包. 使用`matc`的最简单的方法是, 指定一个输入材质定义(下面示例中的`car_paint.mat`)和一个输出材质包(下面示例中的`car_paint.filamat`): 
+
+```text
+$ matc -o ./materials/bin/car_paint.filamat ./materials/src/car_paint.mat
+```
+
+## 着色器验证
+
+编译材质包时, `matc`会尝试验证着色器. 下面的展示了一个错误消息的示例, 它是在编译包含拼写错误的材质定义时生成的,  错误来自其中的片段着色器(应该是`metalic`而不是`metallic`). 报告的行号是源材质定义文件中的行号. 
+
+```text
+ERROR: 0:13: 'metalic' : no such field in structure
+ERROR: 0:13: '' : compilation terminated
+ERROR: 2 compilation errors.  No code generated.
+
+Could not compile material metal.mat
+```
+
+## 选项
+
+表[matcFlags]中给出了与应用程序开发相关的命令行选项. 
+
+              项              |        值       |        用法
+-------------------------------:|:------------------:|:---------------------
+**-o**, **--output**            | [path]             | 指定输出文件路径
+**-p**, **--platform**          | desktop/mobile/all | 选择目标平台
+**-a**, **--api**               | opengl/vulkan/all  | 指定目标图形API
+**-S**, **--optimize-size**     | N/A                | 优化编译材质的大小而不仅仅考虑性能
+**-r**, **--reflect**           | parameters         | 将指定的元数据输出为JSON
+**-v**, **--variant-filter**    | [variant]          | 过滤掉指定的, 由逗号分隔的变体
+[表 [matcFlags]: `matc`选项列表]
+
+`matc`还提供了一些其他选项, 这些选项与应用程序开发人员无关, 仅供内部使用. 
+
+### --platform
+
+默认情况下, `matc`生成的材质包会包含用于所有支持平台的着色器. 如果你希望减小材质包的大小, 建议只选择适当的目标平台. 例如, 只编译用于Android材质包, 请运行以下命令: 
+
+```text
+$ matc -p mobile -o ./materials/bin/car_paint.filamat ./materials/src/car_paint.mat
+```
+
+### --api
+
+默认情况下, `matc`生成的材质包会包含用于OpenGL API的着色器. 除OpenGL着色器外, 你还可以选择为Vulkan API生成着色器. 如果只打算以支持Vulkan的设备为目标, 那么可以通过只生成一组Vulkan着色器来减小材质包的大小: 
+
+```text
+$ matc -a vulkan -o ./materials/bin/car_paint.filamat ./materials/src/car_paint.mat
+```
+
+### --optimize-size
+
+此选项应用较少的优化技术来尝试使最终材质尽可能小. 如果默认情况下编译的材质太大, 那么使用此选项可能是运行时性能和大小之间的良好折衷. 
+
+### --reflect
+
+此选项旨在帮助围绕`matc`构建的工具. 通过它你可以JSON格式输出特定的元数据. 下面的示例输出了Filament标准天空盒材质中定义的参数列表. 它生成一个包含2个参数的列表, 名为`showSun`和`skybox`, 分别为布尔和立方体贴图纹理. 
+
+```text
+$ matc --reflect parameters filament/src/materials/skybox.mat 
+{
+  "parameters": [
+    {
+      "name": "showSun",
+      "type": "bool",
+      "size": "1"
+    },
+    {
+      "name": "skybox",
+      "type": "samplerCubemap",
+      "format": "float",
+      "precision": "default"
+    }
+  ]
+}
+``` 
+
+### --variant-filter
+
+此选项可用于进一步减小已编译材质的大小. 它用于指定一个着色器变体列表, 应用程序永远不会需要这些着色器. 在`matc`的代码生成阶段会跳过这些着色器变体, 从而减小了材质的整体大小. 
+
+指定的变体列表必须以逗号分隔, 可以使用以下变体之一: 
+
+- `directionalLighting`, 当场景中存在平行光时使用 
+- `dynamicLighting`, 当场景中存在非平行光(点光源, 聚光灯等)时使用 
+- `shadowReceiver`, 当一个对象可以接收阴影时使用 
+- `skinning`, 当使用GPU蒙皮设置对象动画时使用
+
+示例:
+```
+--variant-filter=skinning,shadowReceiver
+```
+
+请注意, 某些变体可能会被自动过滤掉. 例如, 在编译`unlit`材质时, 所有与光照相关的变体(`directionalLighting`等)都会被过滤掉. 
+
+使用此选项时, 指定的变体过滤器会与材质本身中指定的变体过滤器合并. 
+
+请谨慎使用此选项, 过滤掉运行时所需的变体可能会导致崩溃. 
+
+# 处理颜色
+
+## 线性颜色
+
+如果颜色数据来自纹理, 只需确保使用sRGB纹理即可, 这样硬件可以自动将sRGB转换为线性RGB. 如果颜色数据是作为参数传递给材质的, 那么可以使用以下算法处理每个颜色通道, 蔡从而将sRGB转换为线性RGB: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+float sRGB_to_linear(float color) {
+	return color <= 0.04045 ?color / 12.92 : pow((color + 0.055) / 1.055, 2.4);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+或者, 你可以使用下面给出的两个方法之一, 它们成本更低但不太精确: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+// 成本更低
+linearColor = pow(color, 2.2);
+// 成本最低
+linearColor = color * color;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+## 预乘alpha
+
+如果颜色的RGB分量乘以了alpha通道, 则颜色使用了预乘alpha: 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ GLSL
+// 计算预乘颜色
+color.rgb *= color.a;
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+如果颜色来自纹理采样, 那么只要确保提前预乘了纹理数据即可. 在Android上, 默认情况下, 从[位图](https://developer.android.com/reference/android/graphics/Bitmap.html)上传的任何纹理都会预乘. 
+
+<!-- Markdeep: --><style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace}</style>
+<!--script src="../third_party/markdeep/markdeep.min.js"></script>
+<script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script--><script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script>
+
+
+<script src="../third_party/markdeep/latest/markdeep.js"></script>

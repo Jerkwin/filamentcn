@@ -20,8 +20,6 @@
 		<p><img src="./jscss/二维码.png" alt=""></p>
 	</header>
 
-	<section>
-
 <h2 id="缘起">缘起</h2>
 
 <p>一直以来, 我都对计算机图形学很感兴趣, 但无奈与平时工作相距甚远, 外兼视力不佳, 所以只能关注一下, 没有深入研究.</p>
@@ -70,11 +68,5 @@
 <li><a href="">Blender猴头</a></li>
 <li><a href="">基本纽结</a></li>
 </ul>
-
-	</section>
-
-	<footer>
-		<p>本<a href="https://github.com/Jerkwin/filamentcn"> GitHub项目 </a>由<a href="https://github.com/Jerkwin"> Jerkwin </a>维护</p>
-	</footer>
 
 </div></body>

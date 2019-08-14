@@ -70,7 +70,6 @@ function entag(tag, content, attribs) {
     return '<' + tag + (attribs ? ' ' + attribs : '') + '>' + content + '</' + tag + '>';
 }
 
-
 function measureFontSize(fontStack) {
     try {
         var canvas = document.createElement('canvas');
@@ -500,7 +499,6 @@ var MARKDEEP_LINE = '<!-- Markdeep: --><style class="fallback">body{visibility:h
 
 // Language options:
 
-
 var CHINESE = {
     keyword: {
         table:     '表',
@@ -552,7 +550,6 @@ var CHINESE = {
     }
 };
 
-
 var DEFAULT_OPTIONS = {
     mode:               'markdeep',
     detectMath:         true,
@@ -568,7 +565,6 @@ var DEFAULT_OPTIONS = {
                          table:   false,
                          listing: false}
 };
-
 
 // See http://www.i18nguy.com/unicode/language-identifiers.html for keys
 var LANG_TABLE = {
@@ -589,14 +585,12 @@ var LANG_TABLE = {
     }
 });
 
-
 var max = Math.max;
 var min = Math.min;
 var abs = Math.abs;
 var sign = Math.sign || function (x) {
     return ( +x === x ) ? ((x === 0) ? x : (x > 0) ? 1 : -1) : NaN;
 };
-
 
 /** Get an option, or return the corresponding value from DEFAULT_OPTIONS */
 function option(key, key2) {
@@ -624,7 +618,6 @@ function option(key, key2) {
     }
 }
 
-
 function maybeShowLabel(url, tag) {
     if (option('showLabels')) {
         var text = ' {\u00A0' + url + '\u00A0}';
@@ -634,18 +627,15 @@ function maybeShowLabel(url, tag) {
     }
 }
 
-
 // Returns the localized version of word, defaulting to the word itself
 function keyword(word) {
     return option('lang').keyword[word] || option('lang').keyword[word.toLowerCase()] || word;
 }
 
-
 /** Converts <>&" to their HTML escape sequences */
 function escapeHTMLEntities(str) {
     return String(str).rp(/&/g, '&amp;').rp(/</g, '&lt;').rp(/>/g, '&gt;').rp(/"/g, '&quot;');
 }
-
 
 /** Restores the original source string's '<' and '>' as entered in
     the document, before the browser processed it as HTML. There is no
@@ -664,11 +654,9 @@ function unescapeHTMLEntities(str) {
         rp(/&amp;/g, '&');
 }
 
-
 function removeHTMLTags(str) {
     return str.rp(/<.*?>/g, '');
 }
-
 
 /** Turn the argument into a legal URL anchor */
 function mangle(text) {
@@ -740,7 +728,6 @@ function nodeToMarkdeepSource(node, leaveEscapes) {
 
     return source;
 }
-
 
 /** Extracts one diagram from a Markdown string.
 
@@ -987,7 +974,6 @@ function replaceTables(s, protect) {
     return s;
 }
 
-
 function replaceLists(s, protect) {
     // Identify task list bullets in a few patterns and reformat them to a standard format for
     // easier processing.
@@ -1104,7 +1090,6 @@ function replaceLists(s, protect) {
 
     return s;
 }
-
 
 /**
     Identifies schedule lists, which look like:
@@ -1384,7 +1369,6 @@ function replaceScheduleLists(str, protect) {
     return str;
 }
 
-
 /**
  Term
  :     description, which might be multiple
@@ -1474,7 +1458,6 @@ function replaceDefinitionLists(s, protect) {
 
     return s;
 }
-
 
 /** Inserts a table of contents in the document and then returns
     [string, table], where the table maps strings to levels. */
@@ -1619,11 +1602,9 @@ function insertTableOfContents(s, protect, exposer) {
     return [s, table];
 }
 
-
 function escapeRegExpCharacters(str) {
     return str.rp(/([\.\[\]\(\)\*\+\?\^\$\\\{\}\|])/g, '\\$1');
 }
-
 
 /** Returns true if there are at least two newlines in each of the arguments */
 function isolated(preSpaces, postSpaces) {
@@ -1635,7 +1616,6 @@ function isolated(preSpaces, postSpaces) {
         return false;
     }
 }
-
 
 /**
     Performs Markdeep processing on str, which must be a string or a
@@ -1985,7 +1965,6 @@ function markdeepToHTML(str, elementMode) {
         });
     } while (foundBlockquote);
 
-
     // FOOTNOTES/ENDNOTES: [^symbolic name]. Disallow spaces in footnote names to
     // make parsing unambiguous
     str = str.rp(/\s*\[\^(\S+)\](?!:)/g, function (match, symbolicName) {
@@ -2072,13 +2051,11 @@ function markdeepToHTML(str, elementMode) {
         return eq + ' \\ref{' + label + '}';
     });
 
-
     // Reformat figure links that have subfigure labels in parentheses, to avoid them being
     // processed as links
     str = str.rp(/\b(figure|fig\.|table|tbl\.|listing|lst\.)\s*\[([^\s\]]+)\](?=\()/gi, function (match) {
         return match + '<span/>';
     });
-
 
     // Process links before images so that captions can contain links
 
@@ -2299,7 +2276,6 @@ function markdeepToHTML(str, elementMode) {
         }
     });
 
-
     // FOOTNOTES/ENDNOTES
     str = str.rp(/\n\[\^(\S+)\]: ((?:.+?\n?)*)/g, function (match, symbolicName, note) {
         symbolicName = symbolicName.toLowerCase().trim();
@@ -2311,7 +2287,6 @@ function markdeepToHTML(str, elementMode) {
             return "\n";
         }
     });
-
 
     // SECTION LINKS: XXX section, XXX subsection.
     // Do this by rediscovering the headers and then recursively
@@ -2425,7 +2400,6 @@ function markdeepToHTML(str, elementMode) {
 
     // Remove any bogus leading close-paragraph tag inserted by our extra newlines
     str = str.rp(/^\s*<\/p>/, '');
-
 
     // If not in element mode and not an INSERT child, maybe add a TOC
     if (! elementMode) {// && ! myURLParse[2]) {
@@ -2726,7 +2700,6 @@ function diagramToSVG(diagramString, alignmentHint) {
             return false;
         };
 
-
         /** Returns true if there is a solid middle (---) horizontal line
             passing through (x, y). Ignores underscores. */
         grid.isSolidHLineAt = function (x, y) {
@@ -2763,7 +2736,6 @@ function diagramToSVG(diagramString, alignmentHint) {
             return false;
         };
 
-
         /** Returns true if there is a solid backslash line passing through (x, y) */
         grid.isSolidBLineAt = function (x, y) {
             if (y === undefined) { y = x.x; x = x.x; }
@@ -2788,7 +2760,6 @@ function diagramToSVG(diagramString, alignmentHint) {
                 return isSolidBLine(lt) || isSolidBLine(rt);
             }
         };
-
 
         /** Returns true if there is a solid diagonal line passing through (x, y) */
         grid.isSolidDLineAt = function (x, y) {
@@ -2823,7 +2794,6 @@ function diagramToSVG(diagramString, alignmentHint) {
 
         return Object.freeze(grid);
     }
-
 
     /** A 1D curve. If C is specified, the result is a bezier with
         that as the tangent control point */
@@ -2981,7 +2951,6 @@ function diagramToSVG(diagramString, alignmentHint) {
         return svg;
     };
 
-
     /** A group of 1D curves. This was designed so that all of the
         methods can later be implemented in O(1) time, but it
         currently uses O(n) implementations for source code
@@ -3029,7 +2998,6 @@ function diagramToSVG(diagramString, alignmentHint) {
         return svg;
     };
 
-
     function DecorationSet() {
         this._decorationArray = [];
     }
@@ -3057,7 +3025,6 @@ function diagramToSVG(diagramString, alignmentHint) {
             this._decorationArray.unshift(d);
         }
     };
-
 
     DS.toSVG = function () {
         var svg = '';
@@ -3278,7 +3245,6 @@ function diagramToSVG(diagramString, alignmentHint) {
             }
         } // i
 
-
         // Find all solid left-to-right upward diagonal lines (DIAGONAL)
         for (var i = -grid.height; i < grid.width; ++i) {
             for (var x = i, y = grid.height - 1; y >= 0; --y, ++x) {
@@ -3347,7 +3313,6 @@ function diagramToSVG(diagramString, alignmentHint) {
                 }
             }
         } // y
-
 
         // Now look for curved corners. The syntax constraints require
         // that these can always be identified by looking at three
@@ -3489,7 +3454,6 @@ function diagramToSVG(diagramString, alignmentHint) {
             } // for x
         } // for y
     } // findPaths
-
 
     function findDecorations(grid, pathSet, decorationSet) {
         function isEmptyOrVertex(c) { return (c === ' ') || /[^a-zA-Z0-9]|[ov]/.test(c); }
@@ -3714,10 +3678,8 @@ function diagramToSVG(diagramString, alignmentHint) {
 
     svg = svg.rp(new RegExp(HIDE_O, 'g'), 'o');
 
-
     return svg;
 }
-
 
 /* xcode.min.js modified */
 var HIGHLIGHT_STYLESHEET =
@@ -4022,4 +3984,3 @@ if (! window.alreadyProcessedMarkdeep) {
 }
 
 })();
-

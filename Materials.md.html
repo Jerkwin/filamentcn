@@ -2,7 +2,7 @@
 
 <style>img { max-width: 100%; }</style>
 
-![](images/filament_logo.png)
+![](images/filament_logo_small.png)
 
 # 关于
 
@@ -63,7 +63,7 @@ Filament支持以下材质模型:
 **clearCoatRoughness 涂层粗糙度**  | 透明涂层的感知光滑程度或粗糙程度
 **anisotropy 各向异性度**          | 切线或副切线方向的各向异性程度
 **anisotropyDirection 各向异性方向** | 局部表面方向
-**ambientOcclusion 环境光遮蔽**    | 定义表面点的环境光可及性. 它是每个像素的阴影因子, 介于0.0和1.0 **之间
+**ambientOcclusion 环境光遮蔽**    | 定义表面点的环境光可及性. 它是每个像素的阴影因子, 介于0.0和1.0之间
 **normal 法线**              | 使用 _凹凸贴图_ (_法线贴图_)作为扰动表面的细节法线
 **clearCoatNormal 涂层法线**     | 使用 _凹凸贴图_ (_法线贴图_)作为扰动透明涂层的细节法线
 **emissive 自发光**            | 额外的漫反射反照用于模拟自发光表面(例如霓虹灯等). 此参数主要用于具有泛光通道的HDR管线
@@ -156,7 +156,7 @@ Filament支持以下材质模型:
 
 ### 反射率
 
-`反射率`属性只影响非金属表面. 此属性可用于控制镜面反射强度. 其值定义在0和1之间, 代表重新映射后的反射率百分比. 例如, 默认值0.5对应于4％的反射率. 应避免使用低于0.35(反射率2％)的值, 因为现实世界中不存在如此低反射率的材料. 
+`反射率`属性只影响非金属表面. 此属性可用于控制镜面反射强度. 其值定义在0和1之间, 代表重新映射后的反射率百分比. 例如, 默认值0.5对应于4%的反射率. 应避免使用低于0.35(反射率2%)的值, 因为现实世界中不存在如此低反射率的材料. 
 
 `反射率`对非金属表面的影响如图[reflectanceProperty]所示(点击图片查看大图). 
 
@@ -166,7 +166,7 @@ Filament支持以下材质模型:
 
 ![图[reflectance]: 常见反射率的值](images/diagram_reflectance.png)
 
-表[commonMatReflectance]给出了各类材料可接受的反射率(现实世界中没有材料的值低于2％). 
+表[commonMatReflectance]给出了各类材料可接受的反射率(现实世界中没有材料的值低于2%). 
 
 
           材料         |    反射率   |   属性值
@@ -190,7 +190,7 @@ Filament支持以下材质模型:
 
 `涂层`属性可用于描述具有两层的材质. 透明涂层始终是各向同性的电介质. 
 
-![图[clearCoat]: 标准材质模型(左)和透明涂层模型(右)下碳纤维材质的比较](images /material_carbon_fiber.png)
+![图[clearCoat]: 标准材质模型(左)和透明涂层模型(右)下碳纤维材质的比较](images/material_carbon_fiber.png)
 
 `涂层`属性控制透明涂层的强度. 此属性应视为二进制值, 设置为0或1. 中间的值可用于控制部分表面具有透明涂层和部分表面不具有透明涂层之间的过渡. 
 
@@ -217,11 +217,11 @@ Filament支持以下材质模型:
 
 `各向异性度`对粗糙金属的影响如图[anisotropyProperty]所示(点击图片查看大图). 
 
-![图[anisotropyProperty]: `各向异性度`从0.0(左)到1.0(右)变化](images/materials/anisotropy.png)
+![图[anisotropyProperty]: `各向异性度` 从0.0(左)到1.0(右)变化](images/materials/anisotropy.png)
 
 下面的图[anisotropyDir]展示了如何使用正值或负值来控制各向异性高光的方向: 正值对应的各向异性沿切线方向, 负值则沿副切线方向. 
 
-![图[anisotropyDir]: 正值(左)与负值(右)的`各向异性度'](images/screenshot_anisotropy_direction.png)
+![图[anisotropyDir]: 正值(左)与负值(右)的 `各向异性度`](images/screenshot_anisotropy_direction.png)
 
 !!!提示
     各向异性材质模型比标准材质模型稍贵一些. 如果不需要各向异性, 请不要为其属性指定值(即使是0.0). 
@@ -270,7 +270,7 @@ Filament支持以下材质模型:
 
 `自发光`属性可用于模拟表面发出的额外光. 它被定义为一个`float4`值, 包含一个RGB颜色(线性空间)以及一个曝光补偿值(alpha通道). 
 
-即使曝光值实际上表示了相机设置的组合, 但摄影师经常使用它来描述光强度. 这就是为什么相机允许摄影师对曝光过度或曝光不足进行曝光补偿的原因. 这一设置可用于艺术控制, 但也可用于实现适当曝光(例如, 将雪的曝光设置为18％中间灰). 
+即使曝光值实际上表示了相机设置的组合, 但摄影师经常使用它来描述光强度. 这就是为什么相机允许摄影师对曝光过度或曝光不足进行曝光补偿的原因. 这一设置可用于艺术控制, 但也可用于实现适当曝光(例如, 将雪的曝光设置为18%中间灰). 
 
 自发光属性的曝光补偿值可用于强制发光颜色比当前曝光更亮(正值)或更暗(负值). 如果启用了泛光效果, 那么使用正曝光补偿可以强制表面泛光. 
 
@@ -301,7 +301,7 @@ Filament支持以下材质模型:
 
        参数      |      定义
 ---------------------:|:---------------------
-**SheenColor 光泽颜色**        | 用于创建双色调镜面反射织物的高光色调(默认值为 $\sqrt{baseColor}$)
+**SheenColor 光泽颜色**        | 用于创建双色调镜面反射织物的高光色调(默认值为 $\sqrt\text{baseColor}$)
 **SubsurfaceColor 次表面颜色**   | 经材料散射和吸收后的漫反射颜色
 [表 [clothProperties]: 布料模型参数]
 
@@ -1324,9 +1324,9 @@ color.rgb *= color.a;
 
 如果颜色来自纹理采样, 那么只要确保提前预乘了纹理数据即可. 在Android上, 默认情况下, 从[位图](https://developer.android.com/reference/android/graphics/Bitmap.html)上传的任何纹理都会预乘. 
 
-<!-- Markdeep: --><style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace}</style>
-<!--script src="../third_party/markdeep/markdeep.min.js"></script>
-<script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script--><script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script>
+<style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace; font-size:5px;}</style>
+<!--link rel="stylesheet" href="./markdeep/latex.css?"-->
 
+<script src="markdeep.js"></script><!--script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script-->
 
-<script src="markdeep.js"></script>
+<!--script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script-->

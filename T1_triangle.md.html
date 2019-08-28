@@ -1,0 +1,237 @@
+<meta charset="utf-8"><style>img { max-width: 100%; }</style>
+
+# 文学式编程
+
+本教程的markdown源代码不仅用于生成此网页, 还用于生成上述演示所需的JavaScript代码. 我们使用一个Python小脚本来进行编织(生成HTML)和缠绕(生成JS). 在代码示例中, 你经常会看到`// TODO: <some task>`. 这是一些特殊标记, 可被后续的代码块替换.
+
+# 启动你的项目
+
+首先, 创建一个名称为`triangle.html`的文本文件, 并添加下面的内容. 这会创建一个移动端友好的页面, 带有全屏画布.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Filament Tutorial</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,user-scalable=no,initial-scale=1">
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { touch-action: none; width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <canvas></canvas>
+    <script src="//unpkg.com/filament/filament.js"></script>
+    <script src="//unpkg.com/gl-matrix@2.8.1/dist/gl-matrix-min.js"></script>
+    <script src="triangle.js"></script>
+</body>
+</html>
+```
+
+上面的HTML加载了三个JavaScript文件:
+
+- `filament.js`完成几件工作:
+	- 下载资源并编译Filament WASM模块.
+	- 包含一些高级实用程序, 例如, 用于简化从JavaScript加载KTX纹理的程序.
+- `gl-matrix-min.js`是一个提供矢量数学函数的小型库.
+- `triangle.js`会包含你的应用程序代码.
+
+接下来, 使用以下内容创建`triangle.js`.
+
+```js triangle.js
+class App {
+  constructor() {
+    // TODO: create entities
+    this.render = this.render.bind(this);
+    this.resize = this.resize.bind(this);
+    window.addEventListener('resize', this.resize);
+    window.requestAnimationFrame(this.render);
+  }
+  render() {
+    // TODO: render scene
+    window.requestAnimationFrame(this.render);
+  }
+  resize() {
+    // TODO: adjust viewport and canvas
+  }
+}
+
+Filament.init(['triangle.filamat'], () => { window.app = new App() } );
+```
+
+两次调用`bind()`可以传递实例方法作为动画和大小调整事件的回调.
+
+`Filament.init()`使用两个东西: 一个资源URL列表和一个回调.
+
+只有所有资源都下载完毕并且Filament模块准备就绪后, 才会触发回调. 在回调中, 我们只是简单地实例化App对象, 因为我们会在其构造函数中完成大部分工作. 我们还将app实例设置为`Window`属性, 以便可以从开发人员控制台访问它.
+
+接下来要下载[triangle.filamat](https://google.github.io/filament/webgl/triangle.filamat), 并将其放在项目目录中. 这是一个 __材质包__, 它是一个二进制文件, 包含了着色器和定义PBR材质的其他数据. 我们会在下一个教程中了解有关材质包的更多信息.
+
+# 生成本地服务器
+
+由于CORS限制, 你的网页应用程序无法直接从文件系统获取材质包. 解决此问题的一种方法是使用Python或nodeJS创建一个临时服务器:
+
+```
+python3 -m http.server     # Python 3
+python -m SimpleHTTPServer # Python 2.7
+npx http-server -p 8000    # nodejs
+```
+
+要查看操作是否成功, 请打开[http://localhost:8000](http://localhost:8000/), 并检查是否可以加载页面, 并且开发人员控制台中不会出现任何错误.
+
+注意, 不要在产品中使用Python的简单服务器, 因为它不能为WebAssembly文件提供具有正确MIME类型的服务.
+
+# 创建引擎和场景
+
+我们现在有了一个基本的框架, 可以响应绘制和大小调整事件. 让我们开始将Filament对象添加到app中. 将以下代码插入app构造函数的顶部.
+
+```js
+this.canvas = document.getElementsByTagName('canvas')[0];
+const engine = this.engine = Filament.Engine.create(this.canvas);
+```
+
+上面的代码片段通过传递一个canvas DOM对象创建了`engine`. 引擎需要canvas才能在其构造函数中创建WebGL 2.0上下文.
+
+引擎是许多Filament实体的工厂, 其中包括场景, 它是实体的扁平容器. 让我们继续创建一个场景, 然后在场景中添加一个名为`triangle`的空白实体.
+
+```js
+this.scene = engine.createScene();
+this.triangle = Filament.EntityManager.get().create();
+this.scene.addEntity(this.triangle);
+```
+
+Filament使用[实体-组件系统](https://en.wikipedia.org/wiki/Entity-component-system). 上述代码段中的`triangle`实体还没有关联到组件. 在本教程的后面, 我们将使其成为一个可渲染对象. 可渲染对象是具有关联绘制调用的实体.
+
+# 构造类型化数组
+
+接下来, 我们将创建两个类型化数组: 一个位置数组, 其中包含每个顶点的XY坐标; 一个颜色数组, 其中包含每个顶点的32位字的颜色.
+
+```js
+const TRIANGLE_POSITIONS = new Float32Array([
+    1, 0,
+    Math.cos(Math.PI * 2 / 3), Math.sin(Math.PI * 2 / 3),
+    Math.cos(Math.PI * 4 / 3), Math.sin(Math.PI * 4 / 3),
+]);
+
+const TRIANGLE_COLORS = new Uint32Array([0xffff0000, 0xff00ff00, 0xff0000ff]);
+```
+
+接下来, 我们将使用位置和颜色缓冲区来创建单个`VertexBuffer`(顶点缓冲区)对象.
+
+```js
+const VertexAttribute = Filament.VertexAttribute;
+const AttributeType = Filament.VertexBuffer$AttributeType;
+this.vb = Filament.VertexBuffer.Builder()
+    .vertexCount(3)
+    .bufferCount(2)
+    .attribute(VertexAttribute.POSITION, 0, AttributeType.FLOAT2, 0, 8)
+    .attribute(VertexAttribute.COLOR, 1, AttributeType.UBYTE4, 0, 4)
+    .normalized(VertexAttribute.COLOR)
+    .build(engine);
+
+this.vb.setBufferAt(engine, 0, TRIANGLE_POSITIONS);
+this.vb.setBufferAt(engine, 1, TRIANGLE_COLORS);
+```
+
+上面的代码段首先为两个枚举类型创建了别名, 然后使用其`Builder`方法构造了顶点缓冲区. 之后, 它使用`setBufferAt`将两个缓冲区对象压入适当的插槽中.
+
+在Filament API中, 上面的构建器模式通常用于构造对象而不是长参数列表. 函数调用的菊花链使得客户端代码在某种程度可以作为其自身的文档.
+
+我们的应用程序在顶点缓冲区中设置了两个缓冲区插槽, 每个插槽与一个属性相关联. 或者, 我们也可以将这些属性交错或合并到单个缓冲区插槽中.
+
+接下来我们将构造一个索引缓冲区. 三角形的索引缓冲区很简单: 只是简单的整数0,1,2.
+
+```js
+this.ib = Filament.IndexBuffer.Builder()
+    .indexCount(3)
+    .bufferType(Filament.IndexBuffer$IndexType.USHORT)
+    .build(engine);
+
+this.ib.setBuffer(engine, new Uint16Array([0, 1, 2]));
+```
+
+请注意, 构造索引缓冲区的方式类似于顶点缓冲区, 但它只有一个缓冲区插槽, 并且只能包含两种类型的数据(`USHORT`或`UINT`).
+
+# 完成初始化
+
+接下来, 让我们根据下载的材质包构造一个实际的材质(材质是一个对象; 材质包只是一个二进制blob), 然后从材质对象中提取默认的`MaterialInstance`. 材质实例对于其参数具有实际的值, 并且可以绑定到可渲染对象. 我们会在下一个教程中了解有关材质实例的更多信息.
+
+提取材质实例之后, 我们最终可以通过设置边界盒并传入顶点和索引缓冲区来为三角形创建可渲染组件.
+
+```js
+const mat = engine.createMaterial('triangle.filamat');
+const matinst = mat.getDefaultInstance();
+Filament.RenderableManager.Builder(1)
+    .boundingBox({ center: [-1, -1, -1], halfExtent: [1, 1, 1] })
+    .material(0, matinst)
+    .geometry(0, Filament.RenderableManager$PrimitiveType.TRIANGLES, this.vb, this.ib)
+    .build(engine, this.triangle);
+```
+
+接下来, 让我们通过创建交换链, 渲染器, 相机和视图来结束初始化例程.
+
+```js
+this.swapChain = engine.createSwapChain();
+this.renderer = engine.createRenderer();
+this.camera = engine.createCamera();
+this.view = engine.createView();
+this.view.setCamera(this.camera);
+this.view.setScene(this.scene);
+this.view.setClearColor([0.1, 0.2, 0.3, 1.0]); // blue-green background
+this.resize(); // adjust the initial viewport
+```
+
+到此为止, 我们已经完成了所有Filament实体的创建, 代码运行时应该没有错误. 然而画布仍然是空白的!
+
+# 渲染和大小调整的处理程序
+
+回想一下, 我们的App类有一个骨架渲染方法, 浏览器每次需要重绘时都会调用它. 通常需要每秒60次.
+
+```js
+render() {
+    // TODO: render scene
+    window.requestAnimationFrame(this.render);
+}
+```
+
+让我们通过旋转三角形并调用Filament渲染器来刷新它. 将以下代码添加到`render`方法的顶部.
+
+```js
+// Rotate the triangle.
+const radians = Date.now() / 1000;
+const transform = mat4.fromRotation(mat4.create(), radians, [0, 0, 1]);
+const tcm = this.engine.getTransformManager();
+const inst = tcm.getInstance(this.triangle);
+tcm.setTransform(inst, transform);
+inst.delete();
+
+// Render the frame.
+this.renderer.render(this.swapChain, this.view);
+```
+
+渲染方法的前半部分获取三角形实体的变换分量, 并使用`gl-matrix`生成旋转矩阵.
+
+渲染方法的后半部分调用视图上的Filament渲染器, 并告诉Filament引擎执行其内部命令缓冲区. Filament渲染器可以告诉应用程序它想跳过一帧, 因此出现了`if`语句.
+
+最后一步. 将以下代码添加到`resize`方法中. 当窗口大小改变时, 这会调整渲染曲面的分辨率, 同时考虑高DPI显示的`devicePixelRatio`. 它还会相应地调整相机视锥体.
+
+```js
+const dpr = window.devicePixelRatio;
+const width = this.canvas.width = window.innerWidth * dpr;
+const height = this.canvas.height = window.innerHeight * dpr;
+this.view.setViewport([0, 0, width, height]);
+
+const aspect = width / height;
+const Projection = Filament.Camera$Projection;
+this.camera.setProjection(Projection.ORTHO, -aspect, aspect, -1, 1, 0, 1);
+```
+
+你现在应该可以看到一个旋转的三角形了! 已完成的JavaScript代码见[此处](https://google.github.io/filament/webgl/tutorial_triangle.js).
+
+在[下一篇教程](https://google.github.io/filament/webgl/tutorial_redball.html)中, 我们将详细介绍Filament材质和3D渲染.
+
+<style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace; font-size:5px;}</style>
+<!--link rel="stylesheet" href="./markdeep/latex.css?"-->
+<script src="markdeep.js"></script><!--script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script-->
+<!--script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script-->

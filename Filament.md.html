@@ -517,7 +517,7 @@ Lambert漫反射BRDF不考虑表面反射的光, 因此不存在漫反射散射.
 
 ![图[whiteFurnaceLoss]: 由于单重散射导致变暗程度随粗糙度增大而增加](images/material_furnace_energy_loss.png)
 
-![图[whiteFurnacePreservation]: 多重散射可以保证能量守恒](images/material_furnace_energy_conservation.png)
+![图[whiteFurnacePreservation]: 多重散射可以保证能量守恒](images/material_furnace_energy_preservation.png)
 
 [#Heitz16]深入讨论了多重散射微面片BRDF. 遗憾的是, 论文只给出了多重散射BRDF的随机估计. 因此, 其解决方法不适用于实时渲染. Kulla和Conty在[#Kulla17]中提出了不同的方法. 他们的想法是添加一个能量补偿项, 作为额外的一个BRDF波瓣, 如方程 $\ref{energyCompensationLobe}$ 所示:
 

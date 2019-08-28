@@ -1,12 +1,12 @@
-               <meta charset="utf-8">
+<meta charset="utf-8"><style>img { max-width: 100%; }</style>
 
-<style>img { max-width: 100%; }</style>
+**Filament中基于物理的渲染**
 
 ![](images/filament_logo_small.png)
 
 # 关于
 
-本文档是[Filament项目](https://github.com/google/filament)的一部分. 要报告本文档中的错误, 请使用[项目问题跟踪器](https://github.com/google/filament/issues).
+本文档是[Filament项目1.3.2 版本](https://github.com/google/filament)的一部分. 要报告本文档中的错误, 请使用[项目问题跟踪器](https://github.com/google/filament/issues).
 
 ## 作者
 
@@ -84,7 +84,7 @@ $h$                          | 与 $l$ 和 $v$ 对应的半单位向量
 $f$                          | BRDF
 $\fDiffuse$                  | BRDF的漫反射分量
 $\fSpecular$                 | BRDF的镜面反射分量
-$\alpha$                     | 感知线性粗糙度
+$\alpha$                     | 粗糙度, 来自感知粗糙度`perceptualRoughness`的重映射
 $\sigma$                     | 漫反射率
 $\Omega$                     | 球形区域
 $\fNormal$                   | 法向入射反射率
@@ -140,6 +140,9 @@ _粗糙度_ 参数对微面片BRDF的影响很大, 该参数描述了一个表�
 图[roughness]展示了不同粗糙度的表面以及光线与它们的相互作用.
 
 ![图[roughness]: 不同粗糙度(从左到右, 从粗糙到光滑)以及对应的BRDF镜面反射分量波瓣](images/diagram_roughness.png)
+
+!!! Note: 关于粗糙度
+    在本文档的着色器代码片段中, 用户设定的粗糙度参数称为感知粗糙度`perceptualRoughness`. 变量`roughness`是根据`perceptualRoughness`重映射得到的, 说明见[参数化]章节.
 
 微面片模型由以下方程描述(其中 $x$ 表示镜面反射分量或漫反射分量):
 
@@ -207,9 +210,9 @@ D_{GGX}(h,\alpha) = \frac{\aa}{\pi [ (\NoH)^2 (\aa - 1) + 1]^2}
 NDF的GLSL实现简单高效, 如清单[specularD]所示.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-float D_GGX(float NoH, float linearRoughness) {
-    float a = NoH * linearRoughness;
-    float k = linearRoughness / (1.0 - NoH * NoH + a * a);
+float D_GGX(float NoH, float roughness) {
+    float a = NoH * roughness;
+    float k = roughness / (1.0 - NoH * NoH + a * a);
     return k * k * (1.0 / PI);
 }
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -229,10 +232,10 @@ $$\begin{equation}
 #define MEDIUMP_FLT_MAX    65504.0
 #define saturateMediump(x) min(x, MEDIUMP_FLT_MAX)
 
-float D_GGX(float linearRoughness, float NoH, const vec3 n, const vec3 h) {
+float D_GGX(float roughness, float NoH, const vec3 n, const vec3 h) {
     vec3 NxH = cross(n, h);
-    float a = NoH * linearRoughness;
-    float k = linearRoughness / (dot(NxH, NxH) + a * a);
+    float a = NoH * roughness;
+    float k = roughness / (dot(NxH, NxH) + a * a);
     float d = k * k * (1.0 / PI);
     return saturateMediump(d);
 }
@@ -302,8 +305,8 @@ V(v,l,\alpha) = \frac{0.5}{\NoL \sqrt{(\NoV)^2 (1 - \aa) + \aa} + \NoV \sqrt{(\N
 可见度项的GLSL实现见清单[specularV], 它比我们预期的更耗时, 因为需要进行两次`sqrt`运算.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-float V_SmithGGXCorrelated(float NoV, float NoL, float linearRoughness) {
-    float a2 = linearRoughness * linearRoughness;
+float V_SmithGGXCorrelated(float NoV, float NoL, float roughness) {
+    float a2 = roughness * roughness;
     float GGXV = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
     float GGXL = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
     return 0.5 / (GGXV + GGXL);
@@ -320,8 +323,8 @@ V(v,l,\alpha) = \frac{0.5}{\NoL [\NoV (1 - \alpha) + \alpha] + \NoV [\NoL (1 - \
 这种近似在数学上是错误的, 但可以避免两次平方根运算, 而且对于实时移动应用程序来说足够精确, 如清单[approximatedSpecularV]所示.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-float V_SmithGGXCorrelatedFast(float NoV, float NoL, float linearRoughness) {
-    float a = linearRoughness;
+float V_SmithGGXCorrelatedFast(float NoV, float NoL, float roughness) {
+    float a = roughness;
     float GGXV = NoL * (NoV * (1.0 - a) + a);
     float GGXL = NoV * (NoL * (1.0 - a) + a);
     return 0.5 / (GGXV + GGXL);
@@ -412,15 +415,13 @@ $$\begin{equation}
 \fGrazing=0.5 + 2 \cdot \alpha \cos^2\theta_d
 \end{equation}$$
 
-需要注意的是, 此公式中使用的粗糙度是感知线性粗糙度(在节[参数化]中将对此进行更多讨论).
-
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 float F_Schlick(float VoH, float f0, float f90) {
     return f0 + (f90 - f0) * pow(1.0 - VoH, 5.0);
 }
 
-float Fd_Burley(float NoV, float NoL, float LoH, float linearRoughness) {
-    float f90 = 0.5 + 2.0 * linearRoughness * LoH * LoH;
+float Fd_Burley(float NoV, float NoL, float LoH, float roughness) {
+    float f90 = 0.5 + 2.0 * roughness * LoH * LoH;
     float lightScatter = F_Schlick(NoL, 1.0, f90);
     float viewScatter = F_Schlick(NoV, 1.0, f90);
     return lightScatter * viewScatter * (1.0 / PI);
@@ -472,12 +473,12 @@ void BRDF(...) {
     float NoH = clamp(dot(n, h), 0.0, 1.0);
     float LoH = clamp(dot(l, h), 0.0, 1.0);
 
-    // 感知线性粗糙度(参见参数化章节说明)
-    float a = roughness * roughness;
+    // 感知线性粗糙度转换为粗糙度(参见[参数化])
+    float roughness = perceptualRoughness * perceptualRoughness;
 
     float D = D_GGX(NoH, a);
     vec3  F = F_Schlick(LoH, f0);
-    float V = V_SmithGGXCorrelated(NoV, NoL, a);
+    float V = V_SmithGGXCorrelated(NoV, NoL, roughness);
 
     // 镜面反射BRDF
     vec3 Fr = (D * V) * F;
@@ -502,7 +503,7 @@ Lambert漫反射BRDF不考虑表面反射的光, 因此不存在漫反射散射.
 
 ### 镜面反射的能量损失
 
-我们之前提到的Cook-Torrance BRDF尝试在微面片层面上模拟一些事件, 但通过计算光的单次反弹来实现。这种近似会导致高粗糙度时出现能量损失. 图[singleVsMultiBounce]展示了发生这种能量损失的原因. 在单次反弹(或单重散射)模型中, 照射到表面的光线可以被反射到另一个微面片上, 并由于遮蔽和阴影项而被忽略. 然而, 如果我们考虑多次反弹(多重散射), 同一光线可能最终会离开微面片区域, 并被反射回观察者.
+我们之前提到的Cook-Torrance BRDF尝试在微面片层面上模拟一些事件, 但通过计算光的单次反弹来实现。这种近似会导致高粗糙度时出现能量损失, 表面无法保持能量恒定. 图[singleVsMultiBounce]展示了发生这种能量损失的原因. 在单次反弹(或单重散射)模型中, 照射到表面的光线可以被反射到另一个微面片上, 并由于遮蔽和阴影项而被忽略. 然而, 如果我们考虑多次反弹(多重散射), 同一光线可能最终会离开微面片区域, 并被反射回观察者.
 
 ![图[singleVsMultiBounce]: 单重散射(左)与多重散射](images/diagram_single_vs_multi_scatter.png)
 
@@ -510,13 +511,13 @@ Lambert漫反射BRDF不考虑表面反射的光, 因此不存在漫反射散射.
 
 ![图[metallicRoughEnergyLoss]: 由于单重散射, 变暗程度会随粗糙度增大而增加](images/material_metallic_energy_loss.png)
 
-![图[metallicRoughEnergyConservation]: 多重散射的能量守恒](images/material_metallic_energy_conservation.png)
+![图[metallicRoughEnergyPreservation]: 多重散射的能量守恒](images/material_metallic_energy_preservation.png)
 
 我们可以使用一个白色的物体, 将其置于纯白色的均匀光照环境中, 来验证BRDF的能量守恒性. 如果达到能量守恒, 纯反射的金属表面($\fNormal = 1$)应该无法与背景区分开来, 无论该表面的粗糙度如何. 图[whiteFurnaceLoss]展示了使用前面章节中介绍的镜面BRDF时, 这种表面的外观. 随粗糙度的增大, 能量损失显而易见. 相比之下, 图[whiteFurnaceConservation]表明, 计算多重散射事件可以解决能量损失问题.
 
 ![图[whiteFurnaceLoss]: 由于单重散射导致变暗程度随粗糙度增大而增加](images/material_furnace_energy_loss.png)
 
-![图[whiteFurnaceConservation]: 多重散射可以保证能量守恒](images/material_furnace_energy_conservation.png)
+![图[whiteFurnacePreservation]: 多重散射可以保证能量守恒](images/material_furnace_energy_conservation.png)
 
 [#Heitz16]深入讨论了多重散射微面片BRDF. 遗憾的是, 论文只给出了多重散射BRDF的随机估计. 因此, 其解决方法不适用于实时渲染. Kulla和Conty在[#Kulla17]中提出了不同的方法. 他们的想法是添加一个能量补偿项, 作为额外的一个BRDF波瓣, 如方程 $\ref{energyCompensationLobe}$ 所示:
 
@@ -724,13 +725,13 @@ vec3 f0 = 0.16 * reflectance * reflectance * (1.0 - metallic) + baseColor * meta
 
 #### 粗糙度重映射和区间限定
 
-使用以下公式将粗糙度重新映射到感知线性范围:
+用户设定的粗糙度为感知粗糙度`perceptualRoughness`, 使用以下公式将其重新映射到感知线性范围:
 
 $$\begin{equation}
-\alpha = \text{roughness}^2
+\alpha = \text{perceptualRoughness}^2
 \end{equation}$$
 
-图[roughness_remap]展示了粗糙度增加(从0.0到1.0)的银金属表面, 使用了未修改的粗糙度值(下)和感知线性粗糙度值(上).
+图[roughness_remap]展示了粗糙度增加(从0.0到1.0)的银金属表面, 使用了未修改的粗糙度值(下)和映射后的值(上).
 
 ![图[roughness_remap]: 粗糙度重映射的比较: 感知线性粗糙度(上)和粗糙度(下)](images/material_roughness_remap.png)
 
@@ -740,7 +741,7 @@ Brent Burley在他的演讲中给出了类似的提议[#Burley12]. 在试验了�
 
 最后但并非最不重要的是, 需要注意, 运行时各种计算中都会使用粗糙度参数, 对这些计算, 有限的浮点精度可能成为问题. 例如, 在移动GPU上 _mediump_ 精度的浮点数通常以半浮点数(fp16)实现.
 
-在计算我们的光照方程中诸如 $\frac{1}{\text{roughness}^4}$ 之类的小值时会产生问题(在GGX计算中感知线性粗糙度会进行平方). 半精度浮点数可以表示的最小值为 $2^{-14}$, 大约是 $6.1 \times 10^{-5}$. 为了避免在不支持去归一化的设备上除以0, $\frac{1}{\text{roughness}^4}$ 的结果必须大于 $6.1 \times 10^{-5}$. 为此, 我们必须将粗糙度限定到0.089, 这样得到的值为 $6.274 \times 10^{- 5}$.
+在计算我们的光照方程中诸如 $\frac{1}{\text{perceptualRoughness}^4}$ 之类的小值时会产生问题(在GGX计算中感知线性粗糙度会进行平方). 半精度浮点数可以表示的最小值为 $2^{-14}$, 大约是 $6.1 \times 10^{-5}$. 为了避免在不支持去归一化的设备上除以0, $\frac{1}{\text{perceptualRoughness}^4}$ 的结果必须大于 $6.1 \times 10^{-5}$. 为此, 我们必须将粗糙度限定到0.089, 这样得到的值为 $6.274 \times 10^{- 5}$.
 
 还应该避免去归一化, 以防止性能下降. 粗糙度也不能设置为0, 以避免直接除以0.
 
@@ -867,12 +868,12 @@ void BRDF(...) {
     // 根据标准模型计算Fd和Fr.
 
     // 重新映射和线性化透明涂层的粗糙度
-    clearCoatRoughness = mix(0.089, 0.6, clearCoatRoughness);
-    clearCoatLinearRoughness = clearCoatRoughness * clearCoatRoughness;
+    clearCoatPerceptualRoughness = mix(0.089, 0.6, clearCoatPerceptualRoughness);
+    clearCoatRoughness = clearCoatPerceptualRoughness * clearCoatPerceptualRoughness;
 
     // 透明涂层BRDF
-    float  Dc = D_GGX(clearCoatLinearRoughness, NoH);
-    float  Vc = V_Kelemen(clearCoatLinearRoughness, LoH);
+    float  Dc = D_GGX(clearCoatRoughness, NoH);
+    float  Vc = V_Kelemen(clearCoatRoughness, LoH);
     float  Fc = F_Schlick(0.04, LoH) * clearCoat; // clear coat strength
     float Frc = (Dc * Vc) * Fc;
 
@@ -954,8 +955,8 @@ $$
 清单[anisotropicBRDF]给出了最终的实现.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-float at = max(linearRoughness * (1.0 + anisotropy), 0.001);
-float ab = max(linearRoughness * (1.0 - anisotropy), 0.001);
+float at = max(roughness * (1.0 + anisotropy), 0.001);
+float ab = max(roughness * (1.0 - anisotropy), 0.001);
 
 float D_GGX_Anisotropic(float NoH, const vec3 h,
         const vec3 t, const vec3 b, float at, float ab) {
@@ -997,8 +998,8 @@ V_{aniso}(\NoL,\NoV,\alpha) = \frac{1}{2[(\NoL)\hat{\Lambda}_v+(\NoV)\hat{\Lambd
 每条光线的 $\hat{\Lambda}_v$ 项都相同, 如果需要只计算一次即可. 清单[anisotropicV]给出了最终的实现.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-float at = max(linearRoughness * (1.0 + anisotropy), 0.001);
-float ab = max(linearRoughness * (1.0 - anisotropy), 0.001);
+float at = max(roughness * (1.0 + anisotropy), 0.001);
+float ab = max(roughness * (1.0 - anisotropy), 0.001);
 
 float V_SmithGGXCorrelated_Anisotropic(float at, float ab, float ToV, float BoV,
         float ToL, float BoL, float NoV, float NoL) {
@@ -1068,15 +1069,15 @@ D_{velvet}(v,h,\alpha) = \frac{1}{\pi(1 + 4\alpha^2)} \left[1 + 4 \frac{\exp\lef
 对于完整的镜面BRDF, 我们也遵循[#Neubelt13], 并用更平滑的变体替代了传统的分母:
 
 $$\begin{equation}\label{clothSpecularBRDF}
-f_{r}(v,h,\alpha) = \frac{F(v,h) D_{velvet}(v,h,\alpha)}{4[\NoL + \NoV - (\NoL)(\NoV)]}
+f_{r}(v,h,\alpha) = \frac{D_{velvet}(v,h,\alpha)}{4[\NoL + \NoV - (\NoL)(\NoV)]}
 \end{equation}$$
 
 天鹅绒NDF的实现如清单[clothBRDF]所示, 实现经过了优化以适合半浮点格式, 并使用三角恒等式避免了计算昂贵的余切.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-float D_Ashikhmin(float linearRoughness, float NoH) {
+float D_Ashikhmin(float roughness, float NoH) {
     // Ashikhmin 2007, "Distribution-based BRDFs"
-	float a2 = linearRoughness * linearRoughness;
+	float a2 = roughness * roughness;
 	float cos2h = NoH * NoH;
 	float sin2h = max(1.0 - cos2h, 0.0078125); // 2^(-14/2), so sin2h^2 > 0 in fp16
 	float sin4h = sin2h * sin2h;
@@ -1096,9 +1097,9 @@ D(m) = \frac{(2 + \frac{1}{\alpha}) \sin \theta^{\frac{1}{\alpha}}}{2 \pi}
 这个NDF的实现见清单[clothCharlieBRDF], 实现经过了优化以适合半浮点格式.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-float D_Charlie(float linearRoughness, float NoH) {
+float D_Charlie(float roughness, float NoH) {
     // Estevez and Kulla 2017, "Production Friendly Microfacet Sheen BRDF"
-    float invAlpha  = 1.0 / linearRoughness;
+    float invAlpha  = 1.0 / roughness;
     float cos2h = NoH * NoH;
     float sin2h = max(1.0 - cos2h, 0.0078125); // 2^(-14/2), so sin2h^2 > 0 in fp16
     return (2.0 + invAlpha) * pow(sin2h, invAlpha * 0.5) / (2.0 * PI);
@@ -1138,13 +1139,13 @@ f_{d}(v,h) = \frac{c_{diff}}{\pi}(1 - F(v,h)) \left< \NoL + \frac{w}{(1 + w)} \r
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // 镜面BRDF
-float D = distributionCloth(linearRoughness, NoH);
+float D = distributionCloth(roughness, NoH);
 float V = visibilityCloth(NoV, NoL);
-vec3  F = fresnel(sheenColor, LoH);
+vec3  F = sheenColor;
 vec3 Fr = (D * V) * F;
 
 // 漫反射BRDF
-float diffuse = diffuse(linearRoughness, NoV, NoL, LoH);
+float diffuse = diffuse(roughness, NoV, NoL, LoH);
 #if defined(MATERIAL_HAS_SUBSURFACE_COLOR)
 // energy conservative wrap diffuse
 diffuse *= saturate((dot(n, light.l) + 0.5) / 2.25);
@@ -2082,8 +2083,8 @@ $LD$ 可以方便地存储在mip映射的立方体贴图中, 其中增加的LOD�
 
 $$
 \begin{align*}
-    \alpha       &= \text{roughness}^2                        \\
-    lod_{\alpha} &= \alpha^{\frac{1}{2}} = \text{roughness}   \\
+    \alpha       &= \text{perceptualRoughness}^2                        \\
+    lod_{\alpha} &= \alpha^{\frac{1}{2}} = \text{perceptualRoughness}   \\
 \end{align*}
 $$
 
@@ -2106,11 +2107,11 @@ $$
 清单[iblEvaluation]提供了一个计算IBL的GLSL实现, 使用了前面章节中描述的各种纹理.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-vec3 ibl(vec3 n, vec3 v, vec3 diffuseColor, vec3 f0, vec3 f90, float roughness) {
+vec3 ibl(vec3 n, vec3 v, vec3 diffuseColor, vec3 f0, vec3 f90, float perceptualRoughness) {
     vec3 r = reflect(n);
     vec3 Ld = textureCube(irradianceEnvMap, r) * diffuseColor;
-    vec3 Lld = textureCube(prefilteredEnvMap, r, computeLODFromRoughness(roughness));
-    vec2 Ldfg = textureLod(dfgLut, vec2(dot(n, v), roughness), 0.0).xy;
+    vec3 Lld = textureCube(prefilteredEnvMap, r, computeLODFromRoughness(perceptualRoughness));
+    vec2 Ldfg = textureLod(dfgLut, vec2(dot(n, v), perceptualRoughness), 0.0).xy;
     vec3 Lr =  (f0 * Ldfg.x + f90 * Ldfg.y) * Lld;
     return Ld + Lr;
 }
@@ -2136,39 +2137,39 @@ vec3 irradianceSH(vec3 n) {
 }
 
 // 注意: 如果使用了多重散射的能量补偿项此近似无效// 我们使用DFG LUT分辨率来实现多重散射
-vec2 prefilteredDFG(float NoV, float roughness) {
+vec2 prefilteredDFG(float NoV, float perceptualRoughness) {
     // 基于Lazarov的Karis逼近
     const vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
     const vec4 c1 = vec4( 1.0,  0.0425,  1.040, -0.040);
-    vec4 r = roughness * c0 + c1;
+    vec4 r = perceptualRoughness * c0 + c1;
     float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
     return vec2(-1.04, 1.04) * a004 + r.zw;
-    基于Karis的Zioma逼近
-    // return vec2(1.0, pow(1.0 - max(roughness, NoV), 3.0));
+    // 基于Karis的Zioma逼近
+    // return vec2(1.0, pow(1.0 - max(perceptualRoughness, NoV), 3.0));
 }
 
 // 注意: 这是上面函数的DFG LUT实现
 vec2 prefilteredDFG_LUT(float coord, float NoV) {
-    // coord = sqrt(linear_roughness)
+    // coord = sqrt(roughness)
     // 计算mipmap时IBL预过滤代码使用的贴图
     return textureLod(dfgLut, vec2(NoV, coord), 0.0).rg;
 }
 
-vec3 evaluateSpecularIBL(vec3 r, float roughness) {
+vec3 evaluateSpecularIBL(vec3 r, float perceptualRoughness) {
     // 假定为256x256的立方体贴图, 有9个mip级别
-    float lod = 8.0 * roughness;
+    float lod = 8.0 * perceptualRoughness;
     // decodeEnvironmentMap() 用于解码RGBM,
     // 或者no-op, 如果立方体贴图存储在浮点纹理中
     return decodeEnvironmentMap(textureCubeLodEXT(environmentMap, r, lod));
 }
 
-vec3 evaluateIBL(vec3 n, vec3 v, vec3 diffuseColor, vec3 f0, vec3 f90, float roughness) {
+vec3 evaluateIBL(vec3 n, vec3 v, vec3 diffuseColor, vec3 f0, vec3 f90, float perceptualRoughness) {
     float NoV = max(dot(n, v), 0.0);
     vec3 r = reflect(-v, n);
 
     // 间接镜面
-    vec3 indirectSpecular = evaluateSpecularIBL(r, roughness);
-    vec2 env = prefilteredDFG_LUT(roughness, NoV);
+    vec3 indirectSpecular = evaluateSpecularIBL(r, perceptualRoughness);
+    vec2 env = prefilteredDFG_LUT(perceptualRoughness, NoV);
     vec3 specularColor = f0 * env.x + f90 * env.y;
 
     // 间接漫反射
@@ -2225,7 +2226,7 @@ r.y += Gv;
 要进行重建, 我们需要稍微修改清单[multiscatterIBLEvaluation]:
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-vec2 dfg = textureLod(dfgLut, vec2(dot(n, v), roughness), 0.0).xy;
+vec2 dfg = textureLod(dfgLut, vec2(dot(n, v), perceptualRoughness), 0.0).xy;
 // (1 - f0) * dfg.x + f0 * dfg.y
 vec3 specularColor = mix(dfg.xxx, dfg.yyy, f0);
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2278,7 +2279,7 @@ float Fc = F_Schlick(0.04, 1.0, clearCoat_NoV) * clearCoat;
 // 基础层衰减的能量补偿
 iblDiffuse  *= 1.0 - Fc;
 iblSpecular *= sq(1.0 - Fc);
-iblSpecular += specularIBL(r, clearCoatRoughness) * Fc;
+iblSpecular += specularIBL(r, clearCoatPerceptualRoughness) * Fc;
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 [清单 [clearCoatIBL]: 用于基于图像的光照的透明涂层镜面波瓣的GLSL实现]
 
@@ -2321,7 +2322,14 @@ vec3 r = reflect(-v, bentNormal);
 
 ### 布料 ###
 
-布料模型的IBL实现比其他材质模型更复杂. 主要区别在于使用了不同的NDF(Ashikhmin, 高度相关的Smith GGX). 如本节所述, 在计算IBL时, 我们使用拆分求和近似来计算BRDF的DFG项. 由于这个DFG项基于错误的NDF, 我们必须找到一个新的近似.
+布料模型的IBL实现比其他材质模型更复杂. 主要区别在于使用了不同的NDF(Charlie, 高度相关的Smith GGX). 如本节所述, 在计算IBL时, 我们使用拆分求和近似来计算BRDF的DFG项. 由于这个DFG项是设计用于不同的BRDF的, 因此不能用于布料BRDF. 由于我们设计的布料BRDF不需要Fresnel项, 我们可以在DFG LUT的第三个通道中生成单个DG项. 结果见图[dfgClothLUT].
+
+生成DG项时使用了[#Estevez17]推荐的均匀采样方法. 在这种情况下, $pdf$ 为简单的 $\frac{1}{2\pi}$, 我们仍然必须使用Jacobian $\frac{1}{4\left< \VoH \right>}$.
+
+![图[dfgClothLUT]: DFG LUT的第三个通道编码了布料BRDF的DG项](images/ibl/dfg_cloth.png)
+
+<!--del>
+布料模型的IBL实现比其他材质模型更复杂. 主要区别在于使用了不同的NDF(Charlie, 高度相关的Smith GGX). 如本节所述, 在计算IBL时, 我们使用拆分求和近似来计算BRDF的DFG项. 由于这个DFG项是设计用于不同的BRDF的, 因此不能用于布料BRDF. 由于我们设计的布料BRDF不需要Fresnel项, 我们可以在DFG LUT的第三个通道中生成单个DG项. 结果见图[dfgClothLUT].
 
 我们使用的近似完全是解析性的, 是根据图[clothDFGReference]所示的蒙特卡罗参考数据手动拟合的(每个数据点使用 $2^{22}$个样本, 而不是重要性采样). 这一视觉对比展示了布料NDF对BRDF的显著影响. 使用标准DFG项会导致大量不正确的结果.
 
@@ -2372,6 +2380,7 @@ vec2 PrefilteredDFG_Cloth_Charlie(float roughness, float NoV) {
 }
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 [清单 [clothCharlieApprox]: "Charlie"布料NDF的DFG近似的GLSL实现]
+</del--->
 
 基于图像的光照的实现的其余部分与常规光照的实现步骤相同, 包括可选的次表面散射项及其包裹漫反射分量. 正如透明涂层IBL实现一样, 我们不能在半球上进行积分, 使用视线方向作为主要光照方向来计算包裹漫反射分量.
 
@@ -2535,7 +2544,7 @@ float computeSpecularAO(float NoV, float ao, float roughness) {
 }
 
 // 间接镜面
-vec3 indirectSpecular = evaluateSpecularIBL(r, roughness);
+vec3 indirectSpecular = evaluateSpecularIBL(r, perceptualRoughness);
 // 环境光遮蔽
 float ao = texture2D(aoMap, outUV).r;
 indirectSpecular *= computeSpecularAO(NoV, ao, roughness);
@@ -2552,7 +2561,7 @@ indirectSpecular *= computeSpecularAO(NoV, ao, roughness);
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // 间接镜面
-vec3 indirectSpecular = evaluateSpecularIBL(r, roughness);
+vec3 indirectSpecular = evaluateSpecularIBL(r, perceptualRoughness);
 
 // 带衰减的水平遮蔽, 直接镜面也应该计算
 float horizon = min(1.0 + dot(r, n), 1.0);
@@ -3466,13 +3475,13 @@ $$\begin{equation}
 因此, BRDF的PDF可以用方程 $\ref{importantPDF}$ 表示:
 
 $$\begin{equation}\label{importantPDF}
-p(\theta,\phi) = \frac{\alpha^2}{\pi[\cos^2\theta (\alpha^2-1) + 1] \cos\theta \sin\theta}
+p(\theta,\phi) = \frac{\alpha^2}{\pi(\cos^2\theta (\alpha^2-1) + 1)^2} \cos\theta \sin\theta
 \end{equation}$$
 
 $\sin \theta$ 项来自立体角微分 $\sin\theta d\phi d\theta$, 因为我们对球面进行积分. 我们独立地对 $\theta$ 和 $\phi$ 进行采样:
 
 $$\begin{align*}
-p(\theta) &= \int_0^{2\pi} p(\theta,\phi) d\phi = \frac{2\alpha^2}{\cos^2\theta (\alpha^2-1) + 1} \cos\theta \sin\theta \\
+p(\theta) &= \int_0^{2\pi} p(\theta,\phi) d\phi = \frac{2\alpha^2}{(\cos^2\theta (\alpha^2-1) + 1)^2} \cos\theta \sin\theta \\
 p(\phi) &= \frac{p(\theta,\phi)}{p(\phi)} = \frac{1}{2\pi}
 \end{align*}$$
 
@@ -3692,14 +3701,14 @@ void computeShBasis(
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 [清单 [nonNormalizedSHBasis]: 计算非归一化SH基的C++实现]
 
-前三个波段的SH基 $y^m_l(s)$:
+前三个波段归一化的SH基函数 $y^m_l(s)$:
 
    Band  |               $m = -2$               |                $m = -1$               |                      $m = 0$                        |                $m = 1$                |                    $m = 2$                    |
 :-------:|:------------------------------------:|:-------------------------------------:|:---------------------------------------------------:|:-------------------------------------:|:---------------------------------------------:|
 $l = 0$  |                                      |                                       | $\frac{1}{2}\sqrt{\frac{1}{\pi}}$                   |                                       |                                               |
 $l = 1$  |                                      | $-\frac{1}{2}\sqrt{\frac{3}{\pi}}y$   | $\frac{1}{2}\sqrt{\frac{3}{\pi}}z$                  | $-\frac{1}{2}\sqrt{\frac{3}{\pi}}x$   |                                               |
 $l = 2$  | $\frac{1}{2}\sqrt{\frac{15}{\pi}}xy$ | $-\frac{1}{2}\sqrt{\frac{15}{\pi}}yz$ | $\frac{1}{4}\sqrt{\frac{5}{\pi}}(2z^2 - x^2 - y^2)$ | $-\frac{1}{2}\sqrt{\frac{15}{\pi}}xz$ | $\frac{1}{4}\sqrt{\frac{15}{\pi}}(x^2 - y^2)$ |
-[表 [basisFunctions]: 每个波段的基函数]
+[表 [basisFunctions]: 每个波段归一化的基函数]
 
 ### 分解和重建
 
@@ -3724,7 +3733,7 @@ $$\begin{equation}
 
 $$\begin{align*}
 C^0_l &= 2\pi \int_0^{\pi} \left< \cos \theta \right> y^0_l(\theta) \sin \theta d\theta \\
-C^0_l &= 2\pi K^没_l \int_0^{\frac{\pi}{2}} P^0_l(\cos \theta) \cos \theta \sin \theta d\theta \\
+C^0_l &= 2\pi K^m_l \int_0^{\frac{\pi}{2}} P^0_l(\cos \theta) \cos \theta \sin \theta d\theta \\
 C^m_l &= 0, m != 0
 \end{align*}$$
 
@@ -3762,7 +3771,7 @@ $$\begin{equation}
 
 $$\begin{equation}
 \hat{C}_{l, even} = 2\pi \frac{(-1)^{\frac{l}{2} - 1}}{(l + 2)(l - 1)} \frac{l!}{2^l (\frac{l!}{2})^2} \\
-\hat{C}_l = \frac{2\pi}{3}
+\hat{C}_1 = \frac{2\pi}{3}
 \end{equation}$$
 
 以下是计算 $\hat{C}_l$ 的C++代码:
@@ -4121,6 +4130,10 @@ void main() {
 
 # 修订
 
+2019年2月20: 布料着色
+ - 移除布料BRDF的Fresnel项
+ - 移除布料的DFG近似, 使用DFG LUT的新通道代替
+
 2018年8月21日: 多重散射
  - 增加了节[镜面反射的能量损失], 关于如何补偿单重散射BRDF中的能量损失
 
@@ -4202,7 +4215,5 @@ For Fast Realistic Image Display. *SIGGRAPH '00 Proceedings of the 27th annual c
 
 <style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace; font-size:5px;}</style>
 <!--link rel="stylesheet" href="./markdeep/latex.css?"-->
-
 <script src="markdeep.js"></script><!--script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script-->
-
 <!--script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script-->

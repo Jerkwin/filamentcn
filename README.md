@@ -48,8 +48,8 @@
 
 <h2 id="教程">Filament教程</h2>
 <ul class="incremental">
-<li><a href="T1_triangle.md.html">三角形</a></li>
-<li><a href="https://google.github.io/filament/webgl/tutorial_redball.html">红色球</a></li>
+<li><a href="T1_triangle.md.html">三角形</a> <a href="./tutorial/triangle.html">在线查看</a></li>
+<li><a href="https://google.github.io/filament/webgl/tutorial_redball.html">红色球</a> <a href="./tutorial/redball.html">在线查看</a></li>
 <li><a href="https://google.github.io/filament/webgl/tutorial_suzanne.html">Blender猴头</a></li>
 </ul>
 

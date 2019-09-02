@@ -42,18 +42,18 @@
 ```js triangle.js
 class App {
   constructor() {
-    // TODO: create entities
+    // TODO: 创建实体
     this.render = this.render.bind(this);
     this.resize = this.resize.bind(this);
     window.addEventListener('resize', this.resize);
     window.requestAnimationFrame(this.render);
   }
   render() {
-    // TODO: render scene
+    // TODO: 渲染场景
     window.requestAnimationFrame(this.render);
   }
   resize() {
-    // TODO: adjust viewport and canvas
+    // TODO: 调整视点和画布
   }
 }
 
@@ -198,7 +198,7 @@ render() {
 让我们通过旋转三角形并调用Filament渲染器来刷新它. 将以下代码添加到`render`方法的顶部.
 
 ```js
-// Rotate the triangle.
+// 旋转三角形
 const radians = Date.now() / 1000;
 const transform = mat4.fromRotation(mat4.create(), radians, [0, 0, 1]);
 const tcm = this.engine.getTransformManager();
@@ -206,7 +206,7 @@ const inst = tcm.getInstance(this.triangle);
 tcm.setTransform(inst, transform);
 inst.delete();
 
-// Render the frame.
+// 渲染帧
 this.renderer.render(this.swapChain, this.view);
 ```
 

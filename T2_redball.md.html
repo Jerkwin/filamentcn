@@ -1,0 +1,292 @@
+<meta charset="utf-8"><style>img { max-width: 100%; }</style>
+<div><iframe src="./tutorial/redball.html" style="width:100%; height:40%"></iframe><a href="./tutorial/redball.html">&#x1F517;</a></div>
+
+# 简介
+
+本教程示例如何创建一个 **红色球**, 主要介绍材质和纹理的相关知识.
+
+对于初学者, 首先创建一个名为`redball.html`的文本文件, 并且复制我们在[上一个教程](https://jerkwin.github.io/filamentcn/T1_triangle.md.html)中使用的HTML. 然后将最后一个脚本的名称从`triangle.js`更改为`redball.js`.
+
+接下来, 你需要使用一些命令行工具: `matc` 和 `cmgen`. 你可以从相应的[Filament发布](https://github.com/google/filament/releases)中获得这些工具. 你应该选择与开发机器相对应的版本, 而不是用于Web的版本.
+
+# 定义塑料材质
+
+`matc` 工具会基于一个包含PBR材质高级描述的文本文件生成一个二进制材质包, 其中包含着色器代码和相关元数据. 有关更多信息, 请参阅描述[Filament材质系统](https://jerkwin.github.io/filamentcn/Materials.md.html)的官方文档.
+
+让我们试试`matc`. 在你常用的文本编辑器中创建以下内容的文件, 并将其命名为 `plastic.mat`.
+
+```text
+material {
+    name : Lit,
+    shadingModel : lit,
+    parameters : [
+        { type : float3, name : baseColor },
+        { type : float,  name : roughness },
+        { type : float,  name : clearCoat },
+        { type : float,  name : clearCoatRoughness }
+    ],
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor.rgb = materialParams.baseColor;
+        material.roughness = materialParams.roughness;
+        material.clearCoat = materialParams.clearCoat;
+        material.clearCoatRoughness = materialParams.clearCoatRoughness;
+    }
+}
+```
+
+接下来, 使用如下命令调用 `matc`:
+
+```
+matc -a opengl -p mobile -o plastic.filamat plastic.mat
+```
+
+现在你的工作目录中应该有一个材质包文件了, 稍后我们将在本教程中使用它.
+
+# 烘焙环境贴图
+
+接下来, 我们将使用Filament的 `cmgen` 工具, 以 latlong 格式根据HDR环境贴图生成两个立方体贴图文件: mipmapped IBL和模糊天空盒.
+
+下载HDR环境贴图[pillars_2k.hdr](https://github.com/google/filament/blob/master/third_party/environments/pillars_2k.hdr), 并在终端中使用如下命令.
+
+```bash
+cmgen -x . --format=ktx --size=256 --extract-blur=0.1 pillars_2k.hdr
+```
+
+现在, 你应该得到了一个名为 `pillars_2k` 的文件夹, 其中包含一些用于IBL和天空盒的KTX文件, 以及一个带有球谐函数系数的文本文件. 你可以删除包含球谐函数系数的文本文件, 因为IBL KTX在其元数据中已经包含了这些系数.
+
+# 创建JavaScript代码
+
+接下来, 创建 `redball.js` 文件, 内容如下.
+
+```js {fragment="root"}
+const environ = 'pillars_2k';
+const ibl_url = `${environ}/${environ}_ibl.ktx`;
+const sky_url = `${environ}/${environ}_skybox.ktx`;
+const filamat_url = 'plastic.filamat'
+
+Filament.init([ filamat_url, ibl_url, sky_url ], () => {
+  // 为方便起见, 为枚举项创建一些全局别名.
+  window.VertexAttribute = Filament.VertexAttribute;
+  window.AttributeType = Filament.VertexBuffer$AttributeType;
+  window.PrimitiveType = Filament.RenderableManager$PrimitiveType;
+  window.IndexType = Filament.IndexBuffer$IndexType;
+  window.Fov = Filament.Camera$Fov;
+  window.LightType = Filament.LightManager$Type;
+
+  // 获取canvas DOM对象并将其传递给App.
+  const canvas = document.getElementsByTagName('canvas')[0];
+  window.app = new App(canvas);
+} );
+
+class App {
+  constructor(canvas) {
+    this.canvas = canvas;
+    const engine = this.engine = Filament.Engine.create(canvas);
+    const scene = engine.createScene();
+
+    // TODO: 创建材质
+    // TODO: 创建球体
+    // TODO: 创建灯光
+    // TODO: 创建IBL
+    // TODO: 创建天空盒
+
+    this.swapChain = engine.createSwapChain();
+    this.renderer = engine.createRenderer();
+    this.camera = engine.createCamera();
+    this.view = engine.createView();
+    this.view.setCamera(this.camera);
+    this.view.setScene(scene);
+    this.resize();
+    this.render = this.render.bind(this);
+    this.resize = this.resize.bind(this);
+    window.addEventListener('resize', this.resize);
+    window.requestAnimationFrame(this.render);
+  }
+
+  render() {
+    const eye = [0, 0, 4], center = [0, 0, 0], up = [0, 1, 0];
+    const radians = Date.now() / 10000;
+    vec3.rotateY(eye, eye, center, radians);
+    this.camera.lookAt(eye, center, up);
+    this.renderer.render(this.swapChain, this.view);
+    window.requestAnimationFrame(this.render);
+  }
+
+  resize() {
+    const dpr = window.devicePixelRatio;
+    const width = this.canvas.width = window.innerWidth * dpr;
+    const height = this.canvas.height = window.innerHeight * dpr;
+    this.view.setViewport([0, 0, width, height]);
+    this.camera.setProjectionFov(45, width / height, 1.0, 10.0, Fov.VERTICAL);
+  }
+}
+```
+
+你应该在上一个教程中就熟悉了上述模板, 尽管它加载了一组新的资源. 我们还为相机添加了一些动画.
+
+接下来, 让我们为在教程开始时构建的材质包创建一个材质实例. 将 **创建材质** 注释替换为以下代码片段.
+
+```js {fragment="create material"}
+const material = engine.createMaterial(filamat_url);
+const matinstance = material.createInstance();
+
+const red = [0.8, 0.0, 0.0];
+matinstance.setColor3Parameter('baseColor', Filament.RgbType.sRGB, red);
+matinstance.setFloatParameter('roughness', 0.5);
+matinstance.setFloatParameter('clearCoat', 1.0);
+matinstance.setFloatParameter('clearCoatRoughness', 0.3);
+```
+
+下一步是创建球体的可渲染对象. 为了解决这个问题, 我们将使用 `IcoSphere` 实用程序类, 其构造函数采用LOD. 它的功能是对二十面体进行细分, 生成三个数组:
+
+- `icosphere.vertices` Float32Array XYZ坐标.
+- `icosphere.tangents` Uint16Array (视为半浮点数) 以四元数编码的表面方向
+- `icosphere.triangles` Uint16Array 三角形索引.
+
+让我们使用这些数组来构建顶点缓冲区和索引缓冲区. 将 **创建球体** 替换为以下代码片段.
+
+```js {fragment="create sphere"}
+const renderable = Filament.EntityManager.get().create();
+scene.addEntity(renderable);
+
+const icosphere = new Filament.IcoSphere(5);
+
+const vb = Filament.VertexBuffer.Builder()
+  .vertexCount(icosphere.vertices.length / 3)
+  .bufferCount(2)
+  .attribute(VertexAttribute.POSITION, 0, AttributeType.FLOAT3, 0, 0)
+  .attribute(VertexAttribute.TANGENTS, 1, AttributeType.SHORT4, 0, 0)
+  .normalized(VertexAttribute.TANGENTS)
+  .build(engine);
+
+const ib = Filament.IndexBuffer.Builder()
+  .indexCount(icosphere.triangles.length)
+  .bufferType(IndexType.USHORT)
+  .build(engine);
+
+vb.setBufferAt(engine, 0, icosphere.vertices);
+vb.setBufferAt(engine, 1, icosphere.tangents);
+ib.setBuffer(engine, icosphere.triangles);
+
+Filament.RenderableManager.Builder(1)
+  .boundingBox({ center: [-1, -1, -1], halfExtent: [1, 1, 1] })
+  .material(0, matinstance)
+  .geometry(0, PrimitiveType.TRIANGLES, vb, ib)
+  .build(engine, renderable);
+```
+
+此时, 应用程序正在渲染一个球体, 但它是黑色的, 因此不会显示出来. 为了证实那里有一个球体, 你可以尝试使用 `setClearColor` 将背景颜色更改为蓝色, 就像我们在第一个教程中所做的那样.
+
+# 添加灯光
+
+在本节中, 我们将创建一些方向光, 以及由我们在教程开始时构建的KTX文件之一定义的基于图像的光源(IBL). 首先, 将 **创建灯光** 注释替换为以下代码片段.
+
+```js {fragment="create lights"}
+const sunlight = Filament.EntityManager.get().create();
+scene.addEntity(sunlight);
+Filament.LightManager.Builder(LightType.SUN)
+  .color([0.98, 0.92, 0.89])
+  .intensity(110000.0)
+  .direction([0.6, -1.0, -0.8])
+  .sunAngularRadius(1.9)
+  .sunHaloSize(10.0)
+  .sunHaloFalloff(80.0)
+  .build(engine, sunlight);
+
+const backlight = Filament.EntityManager.get().create();
+scene.addEntity(backlight);
+Filament.LightManager.Builder(LightType.DIRECTIONAL)
+        .direction([-1, 0, 1])
+        .intensity(50000.0)
+        .build(engine, backlight);
+```
+
+`SUN` 光源类似于 `DIRECTIONAL` 光源, 但具有一些额外的参数, 因为Filament会自动在天空盒中绘制一个光盘.
+
+接下来, 我们需要从KTX IBL创建一个 `IndirectLight` 对象. 一种方法是这样做(不要输入这些代码, 我们有更简单的方法).
+
+```js
+const format = Filament.PixelDataFormat.RGB;
+const datatype = Filament.PixelDataType.UINT_10F_11F_11F_REV;
+
+// 为 mipmapped 立方体贴图创建Texture对象
+const ibl_package = Filament.Buffer(Filament.assets[ibl_url]);
+const iblktx = new Filament.KtxBundle(ibl_package);
+
+const ibltex = Filament.Texture.Builder()
+  .width(iblktx.info().pixelWidth)
+  .height(iblktx.info().pixelHeight)
+  .levels(iblktx.getNumMipLevels())
+  .sampler(Filament.Texture$Sampler.SAMPLER_CUBEMAP)
+  .format(Filament.Texture$InternalFormat.RGBA8)
+  .build(engine);
+
+for (let level = 0; level < iblktx.getNumMipLevels(); ++level) {
+  const uint8array = iblktx.getCubeBlob(level).getBytes();
+  const pixelbuffer = Filament.PixelBuffer(uint8array, format, datatype);
+  ibltex.setImageCube(engine, level, pixelbuffer);
+}
+
+// 解析球谐函数元数据.
+const shstring = iblktx.getMetadata('sh');
+const shfloats = shstring.split(/\s/, 9 * 3).map(parseFloat);
+
+// 构建IBL对象并将其插入场景中.
+const indirectLight = Filament.IndirectLight.Builder()
+  .reflections(ibltex)
+  .irradianceSh(3, shfloats)
+  .intensity(50000.0)
+  .build(engine);
+
+scene.setIndirectLight(indirectLight);
+```
+
+Filament提供了一个JavaScript应用程序来简化这一过程, 只要用以下代码片段替换 **创建IBL** 注释即可.
+
+```js {fragment="create IBL"}
+const indirectLight = engine.createIblFromKtx(ibl_url);
+indirectLight.setIntensity(50000);
+scene.setIndirectLight(indirectLight);
+```
+
+# 添加背景
+
+此时你可以运行示例, 应该看到黑色背景下的一个红色塑料球. 如果没有天盒, 球上的反射就不能正确地表示其周围环境. 以下是为天空盒创建纹理的一种方法:
+
+```js
+const sky_package = Filament.Buffer(Filament.assets[sky_url]);
+const skyktx = new Filament.KtxBundle(sky_package);
+const skytex = Filament.Texture.Builder()
+  .width(skyktx.info().pixelWidth)
+  .height(skyktx.info().pixelHeight)
+  .levels(1)
+  .sampler(Filament.Texture$Sampler.SAMPLER_CUBEMAP)
+  .format(Filament.Texture$InternalFormat.RGBA8)
+  .build(engine);
+
+const uint8array = skyktx.getCubeBlob(0).getBytes();
+const pixelbuffer = Filament.PixelBuffer(uint8array, format, datatype);
+skytex.setImageCube(engine, 0, pixelbuffer);
+```
+
+Filament提供了一个Javascript实用程序来简化这一过程. 将 **创建天空盒** 替换为以下内容.
+
+```js {fragment="create skybox"}
+const skybox = engine.createSkyFromKtx(sky_url);
+scene.setSkybox(skybox);
+```
+
+就是这样, 我们现在得到了一个闪闪发光的红色球, 漂浮在环境之中!
+
+完整的JavaScript文件在[这里](https://google.github.io/filament/webgl/tutorial_redball.js)下载.
+
+在[下一个教程](https://google.github.io/filament/webgl/tutorial_suzanne.html)中, 我们将仔细研究纹理和交互.
+
+<style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace; font-size:5px;}</style>
+<!--link rel="stylesheet" href="./markdeep/latex.css?"-->
+<script src="markdeep.js"></script><!--script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script-->
+<!--script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script-->

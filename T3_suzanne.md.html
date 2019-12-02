@@ -1,0 +1,286 @@
+<meta charset="utf-8"><style>img { max-width: 100%; }</style>
+<div><iframe src="./tutorial/redball.html" style="width:100%; height:40%"></iframe><a href="./tutorial/suzanne.html">&#x1F517;</a></div>
+
+- 中文翻译: LainTea
+
+# 简介
+
+本教程描述如何创建一个 **Blender猴头** 演示模型, 并向你介绍压缩纹理, 生成mipmap, 异步纹理加载, 以及轨迹球旋转等相关内容.
+
+与[上一个教程](https://jerkwin.github.io/filamentcn/T2_redball.md.html)非常类似, 你需要使用开发机器上相应[Filament版本](https://github.com/google/filament/releases)中的命令行工具. 除`matc`和`cmgen`外, 我们还会使用`filamesh`和`mipgen`.
+
+# 创建filamesh文件
+
+Filament没有资源加载系统, 但它提供了一个名为`filamesh`的二进制网格格式, 可用于简单的用例. 让我们通过转换[OBJ文件](https://github.com/google/filament/blob/master/assets/models/monkey/monkey.obj)为猴头创建一个压缩的filamesh文件:
+
+```bash
+filamesh --compress monkey.obj suzanne.filamesh
+```
+
+# 创建mipmapped纹理
+
+接下来, 让我们使用filament的`mipgen`工具创建mipmap的KTX文件. 我们将为每个纹理创建压缩和非压缩两类文件, 因为并非所有的平台都支持相同的压缩格式.
+
+首先复制[monkey目录](https://github.com/google/filament/blob/master/assets/models/monkey)中的PNG文件, 然后执行:
+
+```bash
+# 创建基色的mipmap以及两类压缩文件.
+mipgen albedo.png albedo.ktx
+mipgen --compression=astc_fast_ldr_4x4 albedo.png albedo_astc.ktx
+mipgen --compression=s3tc_rgb_dxt1 albedo.png albedo_s3tc.ktx
+
+# 创建法线贴图的mipmap以及压缩文件.
+mipgen --strip-alpha --kernel=NORMALS --linear normal.png normal.ktx
+mipgen --strip-alpha --kernel=NORMALS --linear --compression=etc_rgb8_normalxyz_40 normal.png normal_etc.ktx
+
+# 创建单分量粗糙度贴图的mipmap以及压缩文件.
+mipgen --grayscale roughness.png roughness.ktx
+mipgen --grayscale --compression=etc_r11_numeric_40 roughness.png roughness_etc.ktx
+
+# 创建单分量金属度贴图的mipmap以及压缩文件.
+mipgen --grayscale metallic.png metallic.ktx
+mipgen --grayscale --compression=etc_r11_numeric_40 metallic.png metallic_etc.ktx
+
+# 创建单分量遮蔽度贴图的mipmap以及压缩文件.
+mipgen --grayscale ao.png ao.ktx
+mipgen --grayscale --compression=etc_r11_numeric_40 ao.png ao_etc.ktx
+```
+
+有关`mipgen`参数和支持格式的更多信息, 请执行`mipgen-help`查看.
+
+在产品设置中, 你需要使用脚本或构建系统调用这些命令.
+
+# 烘焙环境贴图
+
+与[上一教程](https://jerkwin.github.io/filamentcn/T2_redball.md.html)非常相似, 我们需要使用Filament的`cmgen`工具来生成立方体贴图文件, 但这次我们会创建压缩后的文件.
+
+下载[venetian_crossroads_2k.hdr](https://github.com/google/filament/blob/master/third_party/environments/syferfontein_18d_clear_2k.hdr), 然后在终端中调用以下命令.
+
+```bash
+# 创建IBL的S3TC压缩文件, 然后将其重命名, 文件名带_s3tc后缀.
+cmgen -x . --format=ktx --size=256 --extract-blur=0.1 --compression=s3tc_rgba_dxt5 \
+    syferfontein_18d_clear_2k.hdr
+cd syfer* ; mv syfer*_ibl.ktx syferfontein_18d_clear_2k_ibl_s3tc.ktx ; cd -
+
+# 创建IBL的ETC压缩文件, 然后将其重命名, 文件名带_etc后缀.
+cmgen -x . --format=ktx --size=256 --extract-blur=0.1 --compression=etc_rgba8_rgba_40 \
+    syferfontein_18d_clear_2k.hdr
+cd syfer* ; mv syfer*_ibl.ktx syferfontein_18d_clear_2k_ibl_etc.ktx ; cd -
+
+# 创建小的未压缩天空盒, 然后将其重命名, 文件名带_tiny后缀.
+cmgen -x . --format=ktx --size=64 --extract-blur=0.1 syferfontein_18d_clear_2k.hdr
+cd syfer* ; mv syfer*_ibl.ktx syferfontein_18d_clear_2k_skybox_tiny.ktx ; cd -
+
+# 创建完整尺寸, 未压缩的天空盒和IBL
+cmgen -x . --format=ktx --size=256 --extract-blur=0.1 syferfontein_18d_clear_2k.hdr
+```
+
+# 定义带纹理的材质
+
+你可能还记得我们在上一个教程中为红色塑料生成的`filamat`文件. 对于本示例, 我们将创建一个材质, 并使用纹理作为它的多个参数.
+
+创建以下文本文件并命名为`textured.mat`. 请注意, 我们的材质定义现在需要`uv0`属性.
+
+```js
+material {
+    name : textured,
+    requires : [ uv0 ],
+    shadingModel : lit,
+    parameters : [
+        { type : sampler2d, name : albedo },
+        { type : sampler2d, name : roughness },
+        { type : sampler2d, name : metallic },
+        { type : float, name : clearCoat },
+        { type : sampler2d, name : normal },
+        { type : sampler2d, name : ao }
+    ],
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        material.normal = texture(materialParams_normal, getUV0()).xyz * 2.0 - 1.0;
+        prepareMaterial(material);
+        material.baseColor = texture(materialParams_albedo, getUV0());
+        material.roughness = texture(materialParams_roughness, getUV0()).r;
+        material.metallic = texture(materialParams_metallic, getUV0()).r;
+        material.clearCoat = materialParams.clearCoat;
+        material.ambientOcclusion = texture(materialParams_ao, getUV0()).r;
+    }
+}
+```
+
+接下来, 使用如下命令调用 `matc`:
+
+```bash
+matc -a opengl -p mobile -o textured.filamat textured.mat
+```
+
+现在, 你的工作目录中应该有一个材质存档. 对于猴头使用的资源, 法线贴图会添加划痕, 反照率贴图会将眼睛描绘为白色, 依此类推. 有关材质的更多信息, 请参阅[Filament材质系统](https://jerkwin.github.io/filamentcn/Materials.md.html)官方文档.
+
+# 创建应用程序框架
+
+创建一个名为`suzanne.html`的文本文件, 并复制我们在[上一教程](https://jerkwin.github.io/filamentcn/T2_redball.md.html)中使用的HTML. 将最后一个脚本标记从`redball.js`更改为`suzanne.js`. 接下来, 使用以下内容创建`suzanne.js`.
+
+```js  {fragment="root"}
+// TODO: 声明资源URL
+
+Filament.init([ filamat_url, filamesh_url, sky_small_url, ibl_url ], () => {
+    window.app = new App(document.getElementsByTagName('canvas')[0]);
+});
+
+class App {
+    constructor(canvas) {
+        this.canvas = canvas;
+        this.engine = Filament.Engine.create(canvas);
+        this.scene = this.engine.createScene();
+
+        const material = this.engine.createMaterial(filamat_url);
+        this.matinstance = material.createInstance();
+
+        const filamesh = this.engine.loadFilamesh(filamesh_url, this.matinstance);
+        this.suzanne = filamesh.renderable;
+
+        // TODO: 创建天空盒和IBL
+        // TODO: 初始化gltumble
+        // TODO: 获取更大的资源文件
+
+        this.swapChain = this.engine.createSwapChain();
+        this.renderer = this.engine.createRenderer();
+        this.camera = this.engine.createCamera();
+        this.view = this.engine.createView();
+        this.view.setCamera(this.camera);
+        this.view.setScene(this.scene);
+        this.render = this.render.bind(this);
+        this.resize = this.resize.bind(this);
+        window.addEventListener('resize', this.resize);
+
+        const eye = [0, 0, 4], center = [0, 0, 0], up = [0, 1, 0];
+        this.camera.lookAt(eye, center, up);
+
+        this.resize();
+        window.requestAnimationFrame(this.render);
+    }
+
+    render() {
+        // TODO: 施加gltumble矩阵
+        this.renderer.render(this.swapChain, this.view);
+        window.requestAnimationFrame(this.render);
+    }
+
+    resize() {
+        const dpr = window.devicePixelRatio;
+        const width = this.canvas.width = window.innerWidth * dpr;
+        const height = this.canvas.height = window.innerHeight * dpr;
+        this.view.setViewport([0, 0, width, height]);
+
+        const aspect = width / height;
+        const Fov = Filament.Camera$Fov, fov = aspect < 1 ? Fov.HORIZONTAL : Fov.VERTICAL;
+        this.camera.setProjectionFov(45, aspect, 1.0, 10.0, fov);
+    }
+}
+```
+
+我们的应用程序需要下载10个资源, 但在构建`App`时只需要其中的4个. 我们将在构建完成后下载其他6个资源. 通过使用渐进式的加载策略, 我们可以减少预加载的时间.
+
+接下来, 我们需要提供各种资源的URL. 这实际上有点棘手, 因为不同的客户端对压缩纹理具有不同的功能.
+
+为了只下载必需的纹理资源, Filament提供了`getSupportedFormatSuffix`函数. 这个函数需要一个所需格式类型的列表(`etc`, `s3tc`或`astc`), 以空格分隔, 应用程序的开发人员可从服务器获知这些类型. 该函数可以取 *需要* 集合和 *支持* 集合的交集, 然后返回一个合适的字符串, 这个字符串也可能为空.
+
+对于我们的示例, 我们知道我们的web服务器对于反照率可以使用`astc`和`s3tc`格式, 对于其他纹理使用`etc`格式. 未压缩类型(空字符串)始终会作为最后的可用格式.
+
+接下来, 使用以下代码段替换 **声明资源URL** 注释.
+
+```js  {fragment="declare asset URLs"}
+const ibl_suffix = Filament.getSupportedFormatSuffix('etc s3tc');
+const albedo_suffix = Filament.getSupportedFormatSuffix('astc s3tc');
+const texture_suffix = Filament.getSupportedFormatSuffix('etc');
+
+const environ = 'syferfontein_18d_clear_2k'
+const ibl_url = `${environ}/${environ}_ibl${ibl_suffix}.ktx`;
+const sky_small_url = `${environ}/${environ}_skybox_tiny.ktx`;
+const sky_large_url = `${environ}/${environ}_skybox.ktx`;
+const albedo_url = `albedo${albedo_suffix}.ktx`;
+const ao_url = `ao${texture_suffix}.ktx`;
+const metallic_url = `metallic${texture_suffix}.ktx`;
+const normal_url = `normal${texture_suffix}.ktx`;
+const roughness_url = `roughness${texture_suffix}.ktx`;
+const filamat_url = 'textured.filamat';
+const filamesh_url = 'suzanne.filamesh';
+```
+
+# 创建天空盒和IBL
+
+接下来, 让我们在`App`构造函数中创建低分辨率天空盒和IBL.
+
+```js  {fragment="create sky box and IBL"}
+this.skybox = this.engine.createSkyFromKtx(sky_small_url);
+this.scene.setSkybox(this.skybox);
+this.indirectLight = this.engine.createIblFromKtx(ibl_url);
+this.indirectLight.setIntensity(100000);
+this.scene.setIndirectLight(this.indirectLight);
+```
+
+这可以让用户在大的资源加载完成之前就很快地看到适当的背景.
+
+# 异步获取资源
+
+接下来, 我们将从`App`构造函数中调用`Filament.fetch`函数. 此函数与`Filament.init`非常相似. 它需要一个资源URL列表和一个回调函数, 资源下载完成后会触发回调函数.
+
+在回调中, 我们将为材质实例调用几次`setTextureParameter`, 然后我们将使用更高分辨率的纹理重新创建天空盒. 最后, 我们会对在`App`构造函数中创建的可渲染对象取消隐藏.
+
+```js  {fragment="fetch larger assets"}
+Filament.fetch([sky_large_url, albedo_url, roughness_url, metallic_url, normal_url, ao_url], () => {
+    const albedo = this.engine.createTextureFromKtx(albedo_url, {srgb: true});
+    const roughness = this.engine.createTextureFromKtx(roughness_url);
+    const metallic = this.engine.createTextureFromKtx(metallic_url);
+    const normal = this.engine.createTextureFromKtx(normal_url);
+    const ao = this.engine.createTextureFromKtx(ao_url);
+
+    const sampler = new Filament.TextureSampler(
+        Filament.MinFilter.LINEAR_MIPMAP_LINEAR,
+        Filament.MagFilter.LINEAR,
+        Filament.WrapMode.CLAMP_TO_EDGE);
+
+    this.matinstance.setTextureParameter('albedo', albedo, sampler);
+    this.matinstance.setTextureParameter('roughness', roughness, sampler);
+    this.matinstance.setTextureParameter('metallic', metallic, sampler);
+    this.matinstance.setTextureParameter('normal', normal, sampler);
+    this.matinstance.setTextureParameter('ao', ao, sampler);
+
+    // 使用高分辨率天空盒替换低分辨率天空盒.
+    this.engine.destroySkybox(this.skybox);
+    this.skybox = this.engine.createSkyFromKtx(sky_large_url);
+    this.scene.setSkybox(this.skybox);
+
+    this.scene.addEntity(this.suzanne);
+});
+```
+
+# 轨迹球旋转简介
+
+将以下脚本标记添加到HTML文件中. 这段脚本会导入一个小型的第三方库, 用于侦听拖动事件并计算旋转矩阵.
+
+```html
+<script src="https://unpkg.com/gltumble"></script>
+```
+
+接下来, 用以下两个代码片段替换 **初始化gltumble** 和 **施加gltumble矩阵** 注释.
+
+```js  {fragment="initialize gltumble"}
+this.trackball = new Trackball(canvas, {startSpin: 0.035});
+```
+
+```js {fragment="apply gltumble matrix"}
+const tcm = this.engine.getTransformManager();
+const inst = tcm.getInstance(this.suzanne);
+tcm.setTransform(inst, this.trackball.getMatrix());
+inst.delete();
+```
+
+这样就成了, 我们现在有一个快速加载的交互式演示.
+
+完整的JavaScript文件在[这里](tutorial_suzanne.js).
+<style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace; font-size:5px;}</style>
+<!--link rel="stylesheet" href="./markdeep/latex.css?"-->
+<script src="markdeep.js"></script><!--script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script-->
+<!--script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script-->
